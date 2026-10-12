@@ -329,12 +329,20 @@ object UsbDacManager {
                 // Check if device is audio class
                 val isAudioClass = usb.deviceClass == UsbConstants.USB_CLASS_AUDIO ||
                     (0 until usb.interfaceCount).any { idx ->
-                        usb.getInterface(idx).interfaceClass == UsbConstants.USB_CLASS_AUDIO
+                        try {
+                            usb.getInterface(idx).interfaceClass == UsbConstants.USB_CLASS_AUDIO
+                        } catch (e: IllegalArgumentException) {
+                            false
+                        }
                     }
                 val nameMatch = usb.productName?.equals(deviceInfo.productName?.toString(), ignoreCase = true) == true
                 isAudioClass || nameMatch
             }
-        } catch (e: Exception) {
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException enumerating USB devices: ${e.message}")
+            null
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "IllegalStateException enumerating USB devices: ${e.message}")
             null
         }
     }
