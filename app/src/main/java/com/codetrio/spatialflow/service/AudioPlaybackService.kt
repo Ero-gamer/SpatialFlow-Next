@@ -2798,7 +2798,19 @@ class AudioPlaybackService : MediaSessionService() {
     private fun cleanCache() {
         val dayInMs = 24 * 60 * 60 * 1000L
         val now = System.currentTimeMillis()
-        cacheDir.listFiles()?.filter { it.name.startsWith("8d") && it.lastModified() < now - dayInMs }?.forEach { it.delete() }
+
+        // One-time migration: delete legacy root-level "8d*" files
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        if (!prefs.getBoolean("migrated_8d_cache_to_subdir", false)) {
+            cacheDir.listFiles()?.filter { it.name.startsWith("8d") }?.forEach { it.delete() }
+            prefs.edit().putBoolean("migrated_8d_cache_to_subdir", true).apply()
+        }
+
+        // Clean cacheDir/8d/ subdirectory
+        val eightDDir = File(cacheDir, "8d")
+        if (eightDDir.exists()) {
+            eightDDir.listFiles()?.filter { it.lastModified() < now - dayInMs }?.forEach { it.delete() }
+        }
     }
 
     internal var isBitPerfectProvider: () -> Boolean = { isBitPerfectNow() }
