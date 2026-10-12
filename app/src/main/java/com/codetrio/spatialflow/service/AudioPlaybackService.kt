@@ -515,7 +515,7 @@ class AudioPlaybackService : MediaSessionService() {
             try {
                 player.stop()
                 player.clearMediaItems()
-            } catch (e: Exception) {
+            } catch (e: IllegalStateException) {
                 Log.w(TAG, "Player reset during error recovery failed: ${e.message}")
             }
 
@@ -825,8 +825,8 @@ class AudioPlaybackService : MediaSessionService() {
             }
             sendBroadcast(intent)
             Log.d(TAG, "Broadcasted AudioEffect session: action=$action, sessionId=$sessionId, dspBypassed=$shouldBypassDsp")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed broadcasting AudioEffect session: ${e.message}")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException broadcasting AudioEffect session: ${e.message}")
         }
     }
 
@@ -917,7 +917,7 @@ class AudioPlaybackService : MediaSessionService() {
             isDirectUsbBound = isDirectUsbBound,
             isDspBypassed = shouldBypassDsp,
             activeList = activeList.toList(),
-            dacDeviceId = if (isDirectUsbBound) dacDevice?.id else null
+            dacDeviceId = if (isDirectUsbBound) dacDevice.id else null
         )
 
         val stateChanged = lastDacRoutingState != desiredState
@@ -1255,7 +1255,9 @@ class AudioPlaybackService : MediaSessionService() {
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: java.io.IOException) {
                 Log.d(TAG, "Content length probe non-critical: ${e.message}")
             }
         }
@@ -1672,7 +1674,9 @@ class AudioPlaybackService : MediaSessionService() {
             if (uri.scheme == "content") {
                 val canOpen = try {
                     contentResolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
-                } catch (e: Exception) {
+                } catch (e: SecurityException) {
+                    false
+                } catch (e: java.io.IOException) {
                     false
                 }
                 if (!canOpen) {
@@ -1834,10 +1838,10 @@ class AudioPlaybackService : MediaSessionService() {
                 )
                 cacheWriter.cache()
                 Log.d(TAG, "⚡ First-chunk pre-cached (512KB) for instant start")
-            } catch (e: Exception) {
-                if (e !is kotlinx.coroutines.CancellationException) {
-                    Log.w(TAG, "First-chunk pre-cache failed (non-critical): ${e.message}")
-                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: java.io.IOException) {
+                Log.w(TAG, "First-chunk pre-cache failed (non-critical): ${e.message}")
             }
         }
     }
@@ -2077,7 +2081,12 @@ class AudioPlaybackService : MediaSessionService() {
                         square
                     }
                     scaled to compressArtwork(scaled)
-                } catch (e: Exception) {
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: IllegalArgumentException) {
+                    Log.w(TAG, "Artwork preparation failed: ${e.message}")
+                    null
+                } catch (e: IllegalStateException) {
                     Log.w(TAG, "Artwork preparation failed: ${e.message}")
                     null
                 }
@@ -2349,8 +2358,10 @@ class AudioPlaybackService : MediaSessionService() {
                 play()
                 shouldAutoPlay = false
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to load audio: ${e.message}")
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "Illegal state while loading audio: ${e.message}")
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Security exception while loading audio: ${e.message}")
         }
     }
 
@@ -2933,8 +2944,10 @@ class AudioPlaybackService : MediaSessionService() {
                 filter,
                 ContextCompat.RECEIVER_NOT_EXPORTED
             )
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to register audioDeviceReceiver", e)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "SecurityException registering audioDeviceReceiver", e)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "IllegalArgumentException registering audioDeviceReceiver", e)
         }
     }
 
@@ -2942,7 +2955,9 @@ class AudioPlaybackService : MediaSessionService() {
         audioDeviceReceiver?.let {
             try {
                 unregisterReceiver(it)
-            } catch (_: Exception) {}
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Receiver already unregistered: ${e.message}")
+            }
             audioDeviceReceiver = null
         }
     }
