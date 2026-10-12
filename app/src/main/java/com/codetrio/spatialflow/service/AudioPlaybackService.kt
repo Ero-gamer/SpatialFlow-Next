@@ -41,6 +41,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.IconCompat
 import androidx.core.graphics.scale
 import androidx.core.net.toUri
+import com.codetrio.spatialflow.BuildConfig
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
@@ -1230,7 +1231,7 @@ class AudioPlaybackService : MediaSessionService() {
                 val req = okhttp3.Request.Builder()
                     .url(urlStr)
                     .header("Range", "bytes=0-0")
-                    .header("User-Agent", "SpatialFlow/1.8.2 (Android)")
+                    .header("User-Agent", "SpatialFlow/${BuildConfig.VERSION_NAME} (Android)")
                     .get()
                     .build()
 
