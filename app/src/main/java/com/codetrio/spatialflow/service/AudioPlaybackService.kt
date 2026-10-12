@@ -3515,6 +3515,7 @@ class AudioPlaybackService : MediaSessionService() {
                     outBuffer.putShort(rightClamped)
                 }
             } else {
+                // Float PCM path: Used only in Studio mode where 32-bit float audio processing is active.
                 while (inputBuffer.hasRemaining()) {
                     val leftIn = inputBuffer.float
                     val rightIn = if (isStereo) inputBuffer.float else leftIn
