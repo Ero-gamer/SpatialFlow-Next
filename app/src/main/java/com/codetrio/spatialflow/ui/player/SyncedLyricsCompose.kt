@@ -38,6 +38,7 @@ internal fun SyncedLyricsCompose(
     providerResults: Map<String, LyricsResult> = emptyMap(),
     isPlayingProvider: () -> Boolean = { true },
     playbackSpeedProvider: () -> Float = { 1.0f },
+    onLineLongClick: ((LyricLine) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val currentView = LocalView.current
@@ -53,10 +54,12 @@ internal fun SyncedLyricsCompose(
         currentPositionProvider = currentPositionProvider,
         isPlayingProvider = isPlayingProvider,
         playbackSpeedProvider = playbackSpeedProvider,
+        songDurationMs = currentSong?.duration ?: 0L,
         onSeekTo = onSeekTo,
         accentColor = dynamicAccentColor,
         contentColor = contentColor,
-        modifier = modifier
+        modifier = modifier,
+        onLineLongClick = onLineLongClick
     ) {
         LyricsMetadataFooter(
             currentSong = currentSong,

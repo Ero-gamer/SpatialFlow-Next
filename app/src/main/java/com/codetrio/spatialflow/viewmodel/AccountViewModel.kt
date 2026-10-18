@@ -10,9 +10,12 @@ import com.codetrio.spatialflow.data.innertube.OnlinePlaylist
 import com.codetrio.spatialflow.data.innertube.OnlineSong
 import com.codetrio.spatialflow.data.innertube.UserProfile
 import com.codetrio.spatialflow.data.innertube.YouTubeMusic
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Orchestrates standard account retrieval loops sourcing aggregated library contents,
@@ -111,9 +114,44 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
                     android.util.Log.w("AccountViewModel", "Failed to load library albums", it)
                 }
 
-                // Load Liked Songs (from playlist "LM")
+                // Load Liked Songs (from playlist "LM" with proactive streaming)
                 YouTubeMusic.playlist("LM").onSuccess { page ->
                     _songs.value = page.songs
+                    if (!page.continuation.isNullOrBlank()) {
+                        viewModelScope.launch(Dispatchers.IO) {
+                            var currentCont = page.continuation
+                            val allSongs = page.songs.toMutableList()
+                            var iter = 0
+                            while (!currentCont.isNullOrBlank() && iter < 150) {
+                                iter++
+                                delay(60)
+                                val token = currentCont ?: break
+                                var retryCount = 0
+                                var contResult: Result<Pair<List<OnlineSong>, String?>>? = null
+                                while (retryCount < 3) {
+                                    val res = YouTubeMusic.playlistContinuation(token)
+                                    if (res.isSuccess) {
+                                        contResult = res
+                                        break
+                                    }
+                                    retryCount++
+                                    delay(300L * retryCount)
+                                }
+                                if (contResult == null || contResult.isFailure) {
+                                    break
+                                }
+                                contResult.onSuccess { (newSongs, nextCont) ->
+                                    if (newSongs.isEmpty()) {
+                                        currentCont = null
+                                    } else {
+                                        allSongs.addAll(newSongs)
+                                        _songs.value = allSongs.distinctBy { it.videoId }
+                                        currentCont = if (nextCont == currentCont || nextCont.isNullOrBlank()) null else nextCont
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }.onFailure {
                     android.util.Log.w("AccountViewModel", "Failed to load liked songs from playlist LM", it)
                 }
@@ -180,6 +218,29 @@ class AccountViewModel(application: Application) : AndroidViewModel(application)
         AccountManager.saveLoginState(context, cookies)
         YouTubeMusic.setCookie(cookies)
         refreshAll()
+    }
+
+    /**
+     * Attempts to log in using a manually provided cookie string.
+     * Validates session against YouTube Music API, persists if successful, and triggers library sync.
+     */
+    fun loginWithManualCookie(rawCookie: String, onResult: (Result<UserProfile>) -> Unit) {
+        val context = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = AccountManager.testAndSaveCookie(context, rawCookie)
+            result.onSuccess { profile ->
+                _userProfile.value = profile
+                YouTubeMusic.setCookie(AccountManager.getAuthCookie(context))
+                loadLibrary()
+                withContext(Dispatchers.Main) {
+                    onResult(Result.success(profile))
+                }
+            }.onFailure { err ->
+                withContext(Dispatchers.Main) {
+                    onResult(Result.failure(err))
+                }
+            }
+        }
     }
 
     fun toggleSync(enabled: Boolean) {

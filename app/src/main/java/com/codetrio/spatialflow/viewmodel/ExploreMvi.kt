@@ -19,8 +19,10 @@ sealed interface ExploreAction {
     data class OnSongWithQueueClick(val song: OnlineSong, val queue: List<OnlineSong>, val index: Int) : ExploreAction
     data class OnAlbumClick(val album: OnlineAlbum) : ExploreAction
     data class OnAlbumBrowseIdClick(val browseId: String) : ExploreAction
+    data class OnAlbumForSongClick(val songTitle: String, val artistName: String, val albumName: String? = null, val videoId: String? = null) : ExploreAction
     data class OnArtistClick(val artist: OnlineArtist) : ExploreAction
     data class OnArtistBrowseIdClick(val browseId: String) : ExploreAction
+    data class OnArtistNameClick(val artistName: String) : ExploreAction
     data class OnPlaylistClick(val playlist: OnlinePlaylist) : ExploreAction
     data class OnPlaylistIdClick(val playlistId: String) : ExploreAction
     data class OnSectionClick(val browseId: String, val params: String?, val title: String) : ExploreAction
@@ -29,9 +31,12 @@ sealed interface ExploreAction {
     data object OnRefreshHomeFeed : ExploreAction
     data object OnLoadMoreHomeSections : ExploreAction
     data object OnLoadMoreSearchResults : ExploreAction
+    data object OnLoadMorePlaylistSongs : ExploreAction
     data object OnPopDetail : ExploreAction
     data object OnResetToHome : ExploreAction
     data class OnHandleDeepLink(val url: String) : ExploreAction
+    data object OnScrollToTop : ExploreAction
+    data object OnOpenSearch : ExploreAction
 }
 
 /**
@@ -40,4 +45,7 @@ sealed interface ExploreAction {
 sealed interface ExploreEvent {
     data class ShowSnackbar(val message: UiText) : ExploreEvent
     data object TriggerInstantPlayback : ExploreEvent
+    data object ScrollToTop : ExploreEvent
+    data object OpenSearch : ExploreEvent
+    data class NavigateToSpotifyPlaylist(val playlistId: String) : ExploreEvent
 }

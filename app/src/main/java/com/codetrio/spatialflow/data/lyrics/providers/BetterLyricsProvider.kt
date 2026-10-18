@@ -1,13 +1,21 @@
 package com.codetrio.spatialflow.data.lyrics.providers
 
+import android.content.Context
 import android.util.Log
 import com.codetrio.spatialflow.data.lyrics.BetterLyricsApi
 import com.codetrio.spatialflow.data.lyrics.BetterLyricsResponse
+import com.codetrio.spatialflow.data.lyrics.BetterLyricsUnifiedApi
 import com.codetrio.spatialflow.data.lyrics.LyricsResult
 import com.codetrio.spatialflow.data.lyrics.TrackMetadata
 import retrofit2.Call
 
-class BetterLyricsProvider(private val api: BetterLyricsApi) : LyricsProvider {
+class BetterLyricsProvider(
+    private val context: Context? = null,
+    private val api: BetterLyricsApi? = null
+) : LyricsProvider {
+
+    constructor(api: BetterLyricsApi) : this(context = null, api = api)
+
     companion object {
         private const val TAG = "BetterLyricsProvider"
     }
@@ -17,6 +25,21 @@ class BetterLyricsProvider(private val api: BetterLyricsApi) : LyricsProvider {
     override fun getPriority(): Int = 1
 
     override fun search(track: TrackMetadata): LyricsResult? {
+        // 1. Try Unified API stream (golyrics / TTML)
+        if (context != null) {
+            try {
+                val bundle = BetterLyricsUnifiedApi.getBundleBlocking(context, track)
+                if (bundle.bLyricsRichSync != null && bundle.bLyricsRichSync!!.hasLyrics()) {
+                    return bundle.bLyricsRichSync
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Unified stream search failed for '${track.cleanedTitle}': ${e.message}")
+            }
+        }
+
+        // 2. Legacy fallback to Retrofit BetterLyricsApi (if provided)
+        if (api == null) return null
+
         val queries = listOf(
             Pair(track.cleanedArtist, track.cleanedTitle),
             Pair(track.rawArtist, track.rawTitle)

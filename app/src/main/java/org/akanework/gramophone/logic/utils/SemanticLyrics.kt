@@ -94,7 +94,7 @@ private sealed class SyntacticLrc {
     data class Metadata(val name: String, val value: String) : SyntacticLrc()
     data class LyricText(val text: String) : SyntacticLrc()
     data class InvalidText(val text: String) : SyntacticLrc()
-    open class NewLine() : SyntacticLrc() {
+    open class NewLine : SyntacticLrc() {
         class SyntheticNewLine : NewLine()
     }
 
@@ -532,13 +532,12 @@ fun parseLrc(lyricText: String, trimEnabled: Boolean, multiLineEnabled: Boolean)
                 else -> throw IllegalStateException("unexpected type ${element.javaClass.name}")
             }
         }
-        val out2 = out.map { if (it.first == null) "" to it.second else
-            @Suppress("UNCHECKED_CAST") (it as Pair<String, SpeakerEntity?>) }
-            .toMutableList()
+        val out2 = out.map {
+            val raw = it.first ?: ""
+            raw.replace(Regex("[ \\t]+"), " ").trim() to it.second
+        }.toMutableList()
         while (out2.firstOrNull()?.first?.isBlank() == true)
             out2.removeAt(0)
-        //while (out2.lastOrNull()?.first?.isBlank() == true)
-        //    out2.removeAt(out.lastIndex) TODO this breaks unit tests, but blank lines are useless
         return UnsyncedLyrics(out2)
     }
     // Synced lyrics processing state machine starts here
@@ -697,6 +696,42 @@ fun parseLrc(lyricText: String, trimEnabled: Boolean, multiLineEnabled: Boolean)
                                 it.charRange = (it.charRange.first - startDiff)
                                     .coerceAtLeast(0)..(it.charRange.last - startDiff)
                                     .coerceAtMost(text.length - 1)
+                        }
+
+                        // Normalize excessive inter-word spacing (e.g. from LRCs with "<time> Word <time>   <time> next <time>")
+                        if (!words.isNullOrEmpty()) {
+                            val normalizedBuilder = StringBuilder()
+                            var lastIdx = 0
+                            words.sortBy { it.charRange.first }
+                            for (w in words) {
+                                val wStart = w.charRange.first.coerceIn(0, text.length)
+                                val wEnd = (w.charRange.last + 1).coerceIn(0, text.length)
+                                if (wStart > lastIdx) {
+                                    val gap = text.substring(lastIdx, wStart)
+                                    val cleanGap = if (gap.all { it.isWhitespace() }) {
+                                        " "
+                                    } else {
+                                        gap.replace(Regex("[ \\t]+"), " ")
+                                    }
+                                    normalizedBuilder.append(cleanGap)
+                                }
+                                val newWordStart = normalizedBuilder.length
+                                val wordText = if (wEnd > wStart) {
+                                    text.substring(wStart, wEnd).replace(Regex("[ \\t]+"), " ")
+                                } else ""
+                                normalizedBuilder.append(wordText)
+                                val newWordEnd = (normalizedBuilder.length - 1).coerceAtLeast(newWordStart)
+                                w.charRange = newWordStart..newWordEnd
+                                lastIdx = wEnd
+                            }
+                            if (lastIdx < text.length) {
+                                val trailing = text.substring(lastIdx)
+                                val cleanTrailing = trailing.replace(Regex("[ \\t]+"), " ")
+                                normalizedBuilder.append(cleanTrailing)
+                            }
+                            text = normalizedBuilder.toString()
+                        } else {
+                            text = text.replace(Regex("[ \\t]+"), " ")
                         }
                     }
                     val start = if (currentLine.isNotEmpty()) lastSyncPoint
@@ -1366,15 +1401,22 @@ private class TtmlParserState(
 }
 
 fun parseTtml(audioMimeType: String?, lyricText: String): SemanticLyrics? {
+    if (!lyricText.contains("<tt", ignoreCase = true) && !lyricText.contains("<p", ignoreCase = true)) {
+        return null // Fast reject non-TTML content without initializing XML parser
+    }
     val formattedLyricText = lyricText
         .replace(Regex("&(?!#?[a-zA-Z0-9]+;)"), "&amp;")
-    val parser = Xml.newPullParser()
+    val parser = try {
+        Xml.newPullParser()
+    } catch (_: Throwable) {
+        null
+    } ?: return null
     parser.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
     parser.setInput(StringReader(formattedLyricText))
     try {
         parser.nextTag()
         parser.require(XmlPullParser.START_TAG, tt, "tt")
-    } catch (_: XmlPullParserException) {
+    } catch (_: Exception) {
         return null // not ttml
     }
     // val lang = parser.getAttributeValue("http://www.w3.org/XML/1998/namespace", "lang")

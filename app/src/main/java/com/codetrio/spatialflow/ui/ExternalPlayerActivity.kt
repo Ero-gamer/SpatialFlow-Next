@@ -63,8 +63,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.Player
-import coil.compose.AsyncImage
-import coil.request.ImageRequest
+import com.codetrio.spatialflow.ui.explore.ImageSemanticSize
+import com.codetrio.spatialflow.ui.explore.SpatialImage
 import com.codetrio.spatialflow.MainActivity
 import com.codetrio.spatialflow.service.AudioPlaybackService
 import com.codetrio.spatialflow.ui.player.WavyMusicSlider
@@ -392,28 +392,13 @@ fun PopupPlayerContent(
                     shape = RoundedCornerShape(20.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant
                 ) {
-                    if (artBitmap != null) {
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(artBitmap)
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = "Album Art",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                    } else {
-                        // Fallback visual context if ID3 is completely missing
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(uri) // Backstop fallback to raw parser
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = "Album Art Fallback",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                    }
+                    SpatialImage(
+                        model = artBitmap ?: uri,
+                        contentDescription = "Album Art",
+                        size = ImageSemanticSize.ThumbnailSmall,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
                 }
 
                 Spacer(modifier = Modifier.width(20.dp))

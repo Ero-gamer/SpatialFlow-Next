@@ -18,7 +18,7 @@ class KugouProvider(
 
     override fun getName(): String = "KuGou"
 
-    override fun getPriority(): Int = 1
+    override fun getPriority(): Int = 11
 
     override fun search(track: TrackMetadata): LyricsResult? {
         // Try the new API first (works outside China)

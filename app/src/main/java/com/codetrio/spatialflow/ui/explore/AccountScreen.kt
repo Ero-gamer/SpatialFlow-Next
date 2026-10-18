@@ -1,94 +1,79 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
 package com.codetrio.spatialflow.ui.explore
 
+import android.graphics.drawable.BitmapDrawable
+import android.widget.Toast
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.animation.core.tween
 import androidx.compose.material.icons.Icons
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.ui.graphics.Color
-import androidx.palette.graphics.Palette
-import android.graphics.drawable.BitmapDrawable
-import coil.imageLoader
-import coil.request.SuccessResult
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PersonOutline
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import com.codetrio.spatialflow.ui.components.LiquidGlassActionPill
+import com.codetrio.spatialflow.ui.components.LiquidGlassPillIconButton
+import com.codetrio.spatialflow.ui.components.rememberThrottledBackdrop
+import com.codetrio.spatialflow.ui.components.throttledLayerBackdrop
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import coil.compose.AsyncImage
+import androidx.palette.graphics.Palette
+import coil.imageLoader
 import coil.request.ImageRequest
+import coil.request.SuccessResult
+import com.codetrio.spatialflow.R
+import com.codetrio.spatialflow.ui.account.AppIconPickerBottomSheet
 import com.codetrio.spatialflow.data.innertube.AccountManager
 import com.codetrio.spatialflow.data.innertube.OnlineSong
 import com.codetrio.spatialflow.data.innertube.UserProfile
+import com.codetrio.spatialflow.data.spotify.SpotifyPrefs
+import com.codetrio.spatialflow.ui.spotify.SpotifyManualTokenBottomSheet
 import com.codetrio.spatialflow.viewmodel.AccountViewModel
+import com.codetrio.spatialflow.viewmodel.SpotifyAuthState
+import com.codetrio.spatialflow.viewmodel.SpotifyViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
- * Dedicated account portal presenting library details and core auth instrumentation 
+ * Dedicated account portal presenting library details, YouTube Music & Spotify accounts with avatars.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AccountScreen(
     viewModel: AccountViewModel,
+    spotifyViewModel: SpotifyViewModel? = null,
     onBack: () -> Unit,
     onSongClick: (OnlineSong, List<OnlineSong>, Int) -> Unit = { _, _, _ -> },
-    onNavigateToSignIn: () -> Unit = {}
+    onNavigateToSignIn: () -> Unit = {},
+    onNavigateToSpotifySignIn: () -> Unit = {}
 ) {
     val userProfile by viewModel.userProfile.collectAsStateWithLifecycle()
     val history by viewModel.history.collectAsStateWithLifecycle()
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     val context = LocalContext.current
 
     LaunchedEffect(Unit) {
@@ -97,32 +82,48 @@ fun AccountScreen(
         }
     }
     
-    Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
-        topBar = {
-            TopAppBar(
-                title = { Text("Account Settings", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
-                },
-                scrollBehavior = scrollBehavior
-            )
-        }
-    ) { padding ->
-        Box(modifier = Modifier
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    val accountBackdrop = rememberThrottledBackdrop(surfaceColor)
+    val topBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 68.dp
+
+    Box(
+        modifier = Modifier
             .fillMaxSize()
-            .padding(padding)
-            .background(MaterialTheme.colorScheme.surface)) {
+            .background(surfaceColor)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .throttledLayerBackdrop(accountBackdrop)
+        ) {
             AccountSettingsSection(
                 viewModel = viewModel,
+                spotifyViewModel = spotifyViewModel,
                 userProfile = userProfile,
                 history = history,
                 onSongClick = onSongClick,
                 onClose = onBack,
-                onNavigateToSignIn = onNavigateToSignIn
+                onNavigateToSignIn = onNavigateToSignIn,
+                onNavigateToSpotifySignIn = onNavigateToSpotifySignIn,
+                contentTopPadding = topBarPadding
             )
+        }
+
+        // Floating Liquid Glass Action Pill Header (Sibling on top)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LiquidGlassActionPill(backdrop = accountBackdrop) {
+                LiquidGlassPillIconButton(
+                    onClick = onBack,
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back"
+                )
+            }
         }
     }
 }
@@ -131,19 +132,37 @@ fun AccountScreen(
 @Composable
 fun AccountSettingsSection(
     viewModel: AccountViewModel,
+    spotifyViewModel: SpotifyViewModel? = null,
     userProfile: UserProfile?,
     history: List<OnlineSong> = emptyList(),
     onSongClick: (OnlineSong, List<OnlineSong>, Int) -> Unit = { _, _, _ -> },
     onClose: () -> Unit,
-    onNavigateToSignIn: () -> Unit = {}
+    onNavigateToSignIn: () -> Unit = {},
+    onNavigateToSpotifySignIn: () -> Unit = {},
+    contentTopPadding: androidx.compose.ui.unit.Dp = 16.dp
 ) {
     val context = LocalContext.current
-    val isLoggedIn = remember(userProfile) { AccountManager.isLoggedIn(context) }
-    val accountName = userProfile?.name ?: AccountManager.getAccountName(context)
+    val isYtLoggedIn = remember(userProfile) { AccountManager.isLoggedIn(context) }
+    val ytAccountName = userProfile?.name ?: AccountManager.getAccountName(context)
     val token = remember { AccountManager.getAuthCookie(context) ?: "No persistent credentials detected" }
-    
+
+    // Spotify State
+    val spotifyAuthState by (spotifyViewModel?.authState?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(SpotifyAuthState.NOT_CONNECTED) })
+    val spotifyAccountNameState by (spotifyViewModel?.accountName?.collectAsStateWithLifecycle() ?: remember { mutableStateOf("") })
+    val spotifyAccountAvatarUrlState by (spotifyViewModel?.accountAvatarUrl?.collectAsStateWithLifecycle() ?: remember { mutableStateOf<String?>(null) })
+
+    val isSpotifyConnected = spotifyAuthState == SpotifyAuthState.CONNECTED || SpotifyPrefs.isConnected(context)
+    val spotifyName = spotifyAccountNameState.ifEmpty { SpotifyPrefs.getAccountName(context).ifEmpty { "Spotify User" } }
+    val spotifyAvatarUrl = spotifyAccountAvatarUrlState ?: SpotifyPrefs.getAccountAvatarUrl(context)
+
     var syncEnabled by remember { mutableStateOf(AccountManager.isSyncEnabled(context)) }
     var showTokenAlert by remember { mutableStateOf(false) }
+    var showAppIconPicker by remember { mutableStateOf(false) }
+    var showManualYtSheet by remember { mutableStateOf(false) }
+    var showManualSpotifySheet by remember { mutableStateOf(false) }
+
+    val youtubeRed = Color(0xFFFF0000)
+    val spotifyGreen = Color(0xFF1DB954)
 
     var extractedColor by remember { mutableStateOf<Color?>(null) }
     LaunchedEffect(userProfile?.avatarUrl) {
@@ -153,7 +172,8 @@ fun AccountSettingsSection(
                 try {
                     val loader = context.imageLoader
                     val request = ImageRequest.Builder(context)
-                        .data(url)
+                        .data(url.resizeCDN(120))
+                        .size(120)
                         .allowHardware(false)
                         .build()
                     val result = loader.execute(request)
@@ -163,16 +183,7 @@ fun AccountSettingsSection(
                             val palette = Palette.from(bitmap).generate()
                             val vibrantColor = palette.getVibrantColor(0)
                             val dominantColor = palette.getDominantColor(0)
-                            val darkVibrantColor = palette.getDarkVibrantColor(0)
-                            val mutedColor = palette.getMutedColor(0)
-                            val lightVibrantColor = palette.getLightVibrantColor(0)
-                            
-                            val extractedInt = if (vibrantColor != 0) vibrantColor
-                                               else if (dominantColor != 0) dominantColor
-                                               else if (darkVibrantColor != 0) darkVibrantColor
-                                               else if (mutedColor != 0) mutedColor
-                                               else if (lightVibrantColor != 0) lightVibrantColor
-                                               else 0
+                            val extractedInt = if (vibrantColor != 0) vibrantColor else dominantColor
                             if (extractedInt != 0) {
                                 extractedColor = Color(extractedInt)
                             }
@@ -190,11 +201,10 @@ fun AccountSettingsSection(
     val backdropColor = extractedColor ?: MaterialTheme.colorScheme.primaryContainer
     val animatedBackdropColor by animateColorAsState(
         targetValue = backdropColor,
-        animationSpec = tween(1000),
+        animationSpec = MaterialTheme.motionScheme.slowEffectsSpec(),
         label = "backdrop_color"
     )
 
-    // Use the shared helper — expressive timing, full MaterialShapes library, rotation
     val avatarMorphState = rememberExpressiveShapeMorph(
         segmentDurationMillis = 1000,
         rotationDurationMillis = 12000
@@ -203,35 +213,52 @@ fun AccountSettingsSection(
 
     androidx.compose.foundation.lazy.LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 120.dp),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = contentTopPadding, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Top Avatar Hero
         item {
             Column(
-                modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 32.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp, bottom = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
-                    modifier = Modifier.size(200.dp),
+                    modifier = Modifier.size(250.dp),
                     contentAlignment = Alignment.Center
                 ) {
+                    // Expressive shape morphing backdrop BEHIND the avatar
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(avatarMorphShape)
-                            .background(animatedBackdropColor.copy(alpha = 0.6f))
+                            .background(animatedBackdropColor.copy(alpha = 0.5f))
                     )
+
+                    // Hero circular avatar floating on top
                     Box(
                         modifier = Modifier
-                            .size(120.dp)
-                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .size(145.dp)
+                            .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (isLoggedIn && !userProfile?.avatarUrl.isNullOrEmpty()) {
-                            AsyncImage(
+                        if (isYtLoggedIn && !userProfile?.avatarUrl.isNullOrEmpty()) {
+                            SpatialImage(
                                 model = userProfile.avatarUrl,
                                 contentDescription = "Profile Picture",
+                                size = ImageSemanticSize.ThumbnailLarge,
+                                shape = CircleShape,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else if (isSpotifyConnected && !spotifyAvatarUrl.isNullOrEmpty()) {
+                            SpatialImage(
+                                model = spotifyAvatarUrl,
+                                contentDescription = "Spotify Picture",
+                                size = ImageSemanticSize.ThumbnailLarge,
+                                shape = CircleShape,
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
                             )
@@ -239,26 +266,297 @@ fun AccountSettingsSection(
                             Icon(
                                 Icons.Default.PersonOutline,
                                 contentDescription = null,
-                                modifier = Modifier.size(64.dp),
+                                modifier = Modifier.size(72.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
                 }
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(16.dp))
                 Text(
-                    text = accountName,
+                    text = if (isYtLoggedIn) ytAccountName else if (isSpotifyConnected) spotifyName else "Guest Mode",
                     style = MaterialTheme.typography.headlineMedium.copy(letterSpacing = (-0.5).sp),
                     fontWeight = FontWeight.ExtraBold,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                if (isLoggedIn) {
-                    Text(
-                        text = userProfile?.email ?: "YouTube Music Connected",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
+                Text(
+                    text = if (isYtLoggedIn && isSpotifyConnected) "YouTube Music & Spotify Connected"
+                           else if (isYtLoggedIn) "YouTube Music Connected"
+                           else if (isSpotifyConnected) "Spotify Connected"
+                           else "Link your streaming accounts to sync library",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
+        }
+
+        // Connected Accounts Section using Material 3 Expressive ListItem Segmented Shapes
+        item {
+            Column {
+                Text(
+                    text = "Connected Accounts",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
+                    // YouTube Music ListItem
+                    val ytCardBg = if (isYtLoggedIn) youtubeRed.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceContainer
+                    ListItem(
+                        onClick = {
+                            if (!isYtLoggedIn) onNavigateToSignIn()
+                        },
+                        leadingContent = {
+                            if (isYtLoggedIn && !userProfile?.avatarUrl.isNullOrEmpty()) {
+                                SpatialImage(
+                                    model = userProfile.avatarUrl,
+                                    contentDescription = "YT Avatar",
+                                    size = ImageSemanticSize.AvatarSmall,
+                                    shape = CircleShape,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.size(44.dp)
+                                )
+                            } else {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = youtubeRed,
+                                    modifier = Modifier.size(44.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(8.dp)) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.ic_youtube_music),
+                                            contentDescription = "YouTube Music",
+                                            tint = Color.White,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        trailingContent = {
+                            if (isYtLoggedIn) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    val clipboardManager = LocalClipboardManager.current
+                                    IconButton(
+                                        onClick = {
+                                            val ytCookie = AccountManager.getAuthCookie(context) ?: ""
+                                            if (ytCookie.isNotEmpty()) {
+                                                clipboardManager.setText(AnnotatedString(ytCookie))
+                                                Toast.makeText(context, "YouTube Music cookie copied to clipboard", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.ContentCopy,
+                                            contentDescription = "Copy YouTube Cookie",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.logout() },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.PowerSettingsNew,
+                                            contentDescription = "Disconnect YouTube",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { showManualYtSheet = true },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.VpnKey,
+                                            contentDescription = "Manual Cookie Login",
+                                            tint = youtubeRed,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Button(
+                                        onClick = onNavigateToSignIn,
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = youtubeRed, contentColor = Color.White),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Sign In", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        },
+                        shapes = ListItemDefaults.segmentedShapes(index = 0, count = 2),
+                        colors = ListItemDefaults.colors(containerColor = ytCardBg),
+                        supportingContent = {
+                            Text(
+                                text = if (isYtLoggedIn) ytAccountName else "Tap to sign in to YouTube Music",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("YouTube Music", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isYtLoggedIn) Color(0xFF2E7D32) else MaterialTheme.colorScheme.surfaceContainerHighest
+                            ) {
+                                Text(
+                                    text = if (isYtLoggedIn) "Connected" else "Not Linked",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isYtLoggedIn) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // Spotify ListItem
+                    val spotifyCardBg = if (isSpotifyConnected) spotifyGreen.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceContainer
+                    ListItem(
+                        onClick = {
+                            if (!isSpotifyConnected) onNavigateToSpotifySignIn()
+                        },
+                        leadingContent = {
+                            if (isSpotifyConnected && !spotifyAvatarUrl.isNullOrEmpty()) {
+                                SpatialImage(
+                                    model = spotifyAvatarUrl,
+                                    contentDescription = "Spotify Avatar",
+                                    size = ImageSemanticSize.AvatarSmall,
+                                    shape = CircleShape,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.size(44.dp)
+                                )
+                            } else {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = spotifyGreen,
+                                    modifier = Modifier.size(44.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(8.dp)) {
+                                        Icon(
+                                            painter = painterResource(id = R.drawable.ic_spotify_logo),
+                                            contentDescription = "Spotify Logo",
+                                            tint = Color.Black,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                }
+                            }
+                        },
+                        trailingContent = {
+                            if (isSpotifyConnected) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    val clipboardManager = LocalClipboardManager.current
+                                    IconButton(
+                                        onClick = {
+                                            val spDc = SpotifyPrefs.getSpDc(context)
+                                            val spToken = SpotifyPrefs.getAccessToken(context)
+                                            val copyText = if (spDc.isNotEmpty()) "sp_dc=$spDc" else spToken
+                                            if (copyText.isNotEmpty()) {
+                                                clipboardManager.setText(AnnotatedString(copyText))
+                                                Toast.makeText(context, "Spotify token copied to clipboard", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.ContentCopy,
+                                            contentDescription = "Copy Spotify Token",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            spotifyViewModel?.logout() ?: SpotifyPrefs.clearAll(context)
+                                        },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.PowerSettingsNew,
+                                            contentDescription = "Disconnect Spotify",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            } else {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    IconButton(
+                                        onClick = { showManualSpotifySheet = true },
+                                        modifier = Modifier.size(36.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.VpnKey,
+                                            contentDescription = "Manual Token Login",
+                                            tint = spotifyGreen,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Button(
+                                        onClick = onNavigateToSpotifySignIn,
+                                        shape = RoundedCornerShape(14.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = spotifyGreen, contentColor = Color.Black),
+                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                    ) {
+                                        Text("Connect", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        },
+                        shapes = ListItemDefaults.segmentedShapes(index = 1, count = 2),
+                        colors = ListItemDefaults.colors(containerColor = spotifyCardBg),
+                        supportingContent = {
+                            Text(
+                                text = if (isSpotifyConnected) spotifyName else "Tap to sign in to Spotify",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("Spotify", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSpotifyConnected) Color(0xFF2E7D32) else MaterialTheme.colorScheme.surfaceContainerHighest
+                            ) {
+                                Text(
+                                    text = if (isSpotifyConnected) "Connected" else "Not Linked",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (isSpotifyConnected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -278,7 +576,10 @@ fun AccountSettingsSection(
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        this.itemsIndexed(history) { index, song ->
+                        this.itemsIndexed(
+                            items = history,
+                            key = { index, song -> "acct_history_${index}_${song.videoId}" }
+                        ) { index, song ->
                             Column(
                                 modifier = Modifier
                                     .width(140.dp)
@@ -293,9 +594,11 @@ fun AccountSettingsSection(
                                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                                 ) {
                                     if (!song.thumbnailUrl.isNullOrEmpty()) {
-                                        AsyncImage(
+                                        SpatialImage(
                                             model = song.thumbnailUrl,
                                             contentDescription = song.title,
+                                            size = ImageSemanticSize.ThumbnailMedium,
+                                            shape = RoundedCornerShape(12.dp),
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier.fillMaxSize()
                                         )
@@ -363,40 +666,6 @@ fun AccountSettingsSection(
                 )
             }
         }
-
-        item {
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            if (isLoggedIn) {
-                Button(
-                    onClick = { viewModel.logout(); onClose() },
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                        contentColor = MaterialTheme.colorScheme.onErrorContainer
-                    ),
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    Icon(Icons.Default.PowerSettingsNew, null)
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("Disconnect Account", fontWeight = FontWeight.Bold)
-                }
-            } else {
-                Button(
-                    onClick = onNavigateToSignIn,
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    )
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Login, null)
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("Sign In to YouTube Music", fontWeight = FontWeight.Bold)
-                }
-            }
-        }
     }
 
     if (showTokenAlert) {
@@ -409,5 +678,20 @@ fun AccountSettingsSection(
             }
         )
     }
-}
 
+    if (showManualYtSheet) {
+        YouTubeManualCookieBottomSheet(
+            onDismissRequest = { showManualYtSheet = false },
+            accountViewModel = viewModel,
+            onLoginSuccess = { showManualYtSheet = false }
+        )
+    }
+
+    if (showManualSpotifySheet && spotifyViewModel != null) {
+        SpotifyManualTokenBottomSheet(
+            onDismissRequest = { showManualSpotifySheet = false },
+            spotifyViewModel = spotifyViewModel,
+            onLoginSuccess = { showManualSpotifySheet = false }
+        )
+    }
+}

@@ -18,43 +18,29 @@ import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
-import android.webkit.CookieManager
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.defaultMinSize
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -62,64 +48,73 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.codetrio.spatialflow.ui.theme.concentricInner
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.NightsStay
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.DownloadDone
+import androidx.compose.material.icons.rounded.DownloadForOffline
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LibraryMusic
+import androidx.compose.material.icons.rounded.Lyrics
+import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.Opacity
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.PlayCircle
 import androidx.compose.material.icons.rounded.SettingsBackupRestore
-import androidx.compose.material.icons.rounded.Update
+import androidx.compose.material.icons.rounded.SignalWifiOff
+import androidx.compose.material.icons.rounded.Explicit
+import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material.icons.rounded.Vibration
+import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroup
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
-import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.RadioButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
+import androidx.compose.material3.ToggleButtonDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -129,25 +124,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.edit
 import androidx.core.net.toUri
-import androidx.graphics.shapes.Morph
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -155,14 +150,35 @@ import androidx.navigation.NavGraphBuilder
 import com.codetrio.spatialflow.BuildConfig
 import com.codetrio.spatialflow.MainActivity
 import com.codetrio.spatialflow.R
+import com.codetrio.spatialflow.SpatialFlowApplication
 import com.codetrio.spatialflow.composableWithBlur
-import com.codetrio.spatialflow.ui.explore.MorphShape
-import com.codetrio.spatialflow.ui.explore.rememberExpressiveShapeMorph
-import com.codetrio.spatialflow.ui.explore.shimmerEffect
-import com.codetrio.spatialflow.ui.player.SleepTimerBottomSheet
+import com.codetrio.spatialflow.domain.model.CacheBreakdown
+import com.codetrio.spatialflow.domain.model.CacheCategory
+import com.codetrio.spatialflow.domain.repository.LocalCacheDataSource
+import com.codetrio.spatialflow.ui.SettingsViewModel.Companion.KEY_AWAITING_SUPPORTER_REWARD
+import com.codetrio.spatialflow.ui.SettingsViewModel.Companion.KEY_IS_SUPPORTER
+import com.codetrio.spatialflow.ui.SettingsViewModel.Companion.KEY_SUPPORTER_REWARD_LAUNCH_TIME
+import com.codetrio.spatialflow.ui.SettingsViewModel.Companion.PREFS_NAME
+import com.codetrio.spatialflow.ui.animation.aospSharedAxisEnter
+import com.codetrio.spatialflow.ui.animation.aospSharedAxisExit
+import com.codetrio.spatialflow.ui.animation.aospSharedAxisPopEnter
+import com.codetrio.spatialflow.ui.animation.aospSharedAxisPopExit
+import com.codetrio.spatialflow.ui.explore.ImageSemanticSize
+import com.codetrio.spatialflow.ui.explore.SpatialImage
+import com.codetrio.spatialflow.ui.settings.AboutScreen
+import com.codetrio.spatialflow.ui.settings.AccountScreen
+import com.codetrio.spatialflow.ui.settings.AppearanceScreen
+import com.codetrio.spatialflow.ui.settings.BackupRestoreScreen
+import com.codetrio.spatialflow.ui.settings.HapticsScreen
+import com.codetrio.spatialflow.ui.settings.MusicManagementScreen
+import com.codetrio.spatialflow.ui.settings.PlaybackScreen
+import com.codetrio.spatialflow.ui.settings.SettingsGroupCard
+import com.codetrio.spatialflow.ui.settings.SettingsHeader
+import com.codetrio.spatialflow.ui.settings.WhatsNewScreen
+import com.codetrio.spatialflow.ui.theme.SpatialShapes
+import com.codetrio.spatialflow.ui.theme.observeKey
 import com.codetrio.spatialflow.viewmodel.PlayerSharedViewModel
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -174,7 +190,6 @@ import java.net.URLEncoder
 import java.text.DecimalFormat
 import kotlin.math.log10
 import kotlin.math.pow
-import kotlin.math.roundToInt
 
 private val SmoothSpring = spring<Float>(
     dampingRatio = Spring.DampingRatioNoBouncy,
@@ -192,6 +207,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val prefs: SharedPreferences =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    private val cacheDataSource: LocalCacheDataSource by lazy {
+        (application as SpatialFlowApplication).localCacheDataSource
+    }
+
     // ── Dark Mode ────────────────────────────────────────────────────────────
     private val _darkMode = MutableStateFlow(
         prefs.getString("theme_mode", "system").let {
@@ -199,6 +218,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     )
     val darkMode: StateFlow<Boolean> = _darkMode.asStateFlow()
+
+    // ── Supporter State ───────────────────────────────────────────────────────
+    private val _isSupporter = MutableStateFlow(prefs.getBoolean(KEY_IS_SUPPORTER, false))
+    val isSupporter: StateFlow<Boolean> = _isSupporter.asStateFlow()
+
+    fun markSupporterUnlocked() {
+        _isSupporter.value = true
+        prefs.edit { putBoolean(KEY_IS_SUPPORTER, true) }
+    }
 
     fun setDarkMode(enabled: Boolean) {
         _darkMode.value = enabled
@@ -226,25 +254,46 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     // ── Haptics ──────────────────────────────────────────────────────────────
+    private val _hapticsEnabled =
+        MutableStateFlow(prefs.getBoolean(KEY_HAPTICS_ENABLED, false))
+    val hapticsEnabled: StateFlow<Boolean> = _hapticsEnabled.asStateFlow()
+
     private val _vibrationStrength =
         MutableStateFlow(prefs.getFloat(KEY_VIBRATION_STRENGTH, 80f))
     val vibrationStrength: StateFlow<Float> = _vibrationStrength.asStateFlow()
 
+    private val _hapticAudioMode =
+        MutableStateFlow(prefs.getString(KEY_HAPTIC_AUDIO_MODE, "full") ?: "full")
+    val hapticAudioMode: StateFlow<String> = _hapticAudioMode.asStateFlow()
+
+    private val _hapticPunchBoost =
+        MutableStateFlow(prefs.getBoolean(KEY_HAPTIC_PUNCH_BOOST, true))
+    val hapticPunchBoost: StateFlow<Boolean> = _hapticPunchBoost.asStateFlow()
+
     private val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     val hasHaptics: Boolean = vibrator?.hasVibrator() == true
+
+    fun setHapticsEnabled(enabled: Boolean) {
+        _hapticsEnabled.value = enabled
+        prefs.edit { putBoolean(KEY_HAPTICS_ENABLED, enabled) }
+    }
 
     fun setVibrationStrength(strength: Float) {
         _vibrationStrength.value = strength
         prefs.edit {putFloat(KEY_VIBRATION_STRENGTH, strength)}
         if (strength > 0 && hasHaptics && vibrator != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val amplitude = (strength / 100f * 255).toInt().coerceIn(1, 255)
-                vibrator.vibrate(VibrationEffect.createOneShot(50, amplitude))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(50)
-            }
+            com.codetrio.spatialflow.util.PlayerHapticManager.triggerSliderTick(context)
         }
+    }
+
+    fun setHapticAudioMode(mode: String) {
+        _hapticAudioMode.value = mode
+        prefs.edit { putString(KEY_HAPTIC_AUDIO_MODE, mode) }
+    }
+
+    fun setHapticPunchBoost(enabled: Boolean) {
+        _hapticPunchBoost.value = enabled
+        prefs.edit { putBoolean(KEY_HAPTIC_PUNCH_BOOST, enabled) }
     }
 
     // ── Crossfade ────────────────────────────────────────────────────────────
@@ -258,12 +307,46 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setCrossfadeEnabled(enabled: Boolean) {
         _crossfadeEnabled.value = enabled
-        prefs.edit {putBoolean(KEY_CROSSFADE_ENABLED, enabled)}
+        prefs.edit { putBoolean(KEY_CROSSFADE_ENABLED, enabled) }
+        if (enabled && _autoMixEnabled.value) {
+            setAutoMixEnabled(false)
+        }
     }
 
     fun setCrossfadeDuration(duration: Float) {
         _crossfadeDuration.value = duration
         prefs.edit {putFloat(KEY_CROSSFADE_DURATION, duration)}
+    }
+
+    private val _crossfadeMode =
+        MutableStateFlow(prefs.getString(KEY_CROSSFADE_MODE, "auto") ?: "auto")
+    val crossfadeMode: StateFlow<String> = _crossfadeMode.asStateFlow()
+
+    fun setCrossfadeMode(mode: String) {
+        _crossfadeMode.value = mode
+        prefs.edit {putString(KEY_CROSSFADE_MODE, mode)}
+    }
+
+    // ── AutoMix ────────────────────────────────────────────────────────────
+    private val _autoMixEnabled =
+        MutableStateFlow(prefs.getBoolean(KEY_AUTOMIX_ENABLED, false))
+    val autoMixEnabled: StateFlow<Boolean> = _autoMixEnabled.asStateFlow()
+
+    private val _autoMixPerformanceMode =
+        MutableStateFlow(prefs.getString(KEY_AUTOMIX_PERFORMANCE_MODE, "BALANCED") ?: "BALANCED")
+    val autoMixPerformanceMode: StateFlow<String> = _autoMixPerformanceMode.asStateFlow()
+
+    fun setAutoMixEnabled(enabled: Boolean) {
+        _autoMixEnabled.value = enabled
+        prefs.edit { putBoolean(KEY_AUTOMIX_ENABLED, enabled) }
+        if (enabled && _crossfadeEnabled.value) {
+            setCrossfadeEnabled(false)
+        }
+    }
+
+    fun setAutoMixPerformanceMode(mode: String) {
+        _autoMixPerformanceMode.value = mode
+        prefs.edit { putString(KEY_AUTOMIX_PERFORMANCE_MODE, mode) }
     }
 
     // ── Volume Normalization ─────────────────────────────────────────────────
@@ -292,6 +375,23 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.edit {putBoolean(KEY_AUDIO_FOCUS, enabled)}
     }
 
+    // ── Headphones & Bluetooth ─────────────────────────────────────────────
+    private val _disconnectAction = MutableStateFlow(prefs.getString(KEY_DISCONNECT_ACTION, "pause") ?: "pause")
+    val disconnectAction: StateFlow<String> = _disconnectAction.asStateFlow()
+
+    fun setDisconnectAction(action: String) {
+        _disconnectAction.value = action
+        prefs.edit { putString(KEY_DISCONNECT_ACTION, action) }
+    }
+
+    private val _resumeOnConnect = MutableStateFlow(prefs.getBoolean(KEY_RESUME_ON_CONNECT, false))
+    val resumeOnConnect: StateFlow<Boolean> = _resumeOnConnect.asStateFlow()
+
+    fun setResumeOnConnect(enabled: Boolean) {
+        _resumeOnConnect.value = enabled
+        prefs.edit { putBoolean(KEY_RESUME_ON_CONNECT, enabled) }
+    }
+
     // ── Autoplay ─────────────────────────────────────────────────────────────
     private val _autoplayEnabled = MutableStateFlow(prefs.getBoolean("autoplay_enabled", true))
     val autoplayEnabled: StateFlow<Boolean> = _autoplayEnabled.asStateFlow()
@@ -302,6 +402,24 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             if (_autoplayEnabled.value != enabled) {
                 _autoplayEnabled.value = enabled
             }
+        } else if (key == KEY_PLAYER_THEME) {
+            _playerTheme.value = sharedPreferences.getString(KEY_PLAYER_THEME, "fluid") ?: "fluid"
+        } else if (key == KEY_MINI_PLAYER_THEME) {
+            _miniPlayerTheme.value = sharedPreferences.getString(KEY_MINI_PLAYER_THEME, "blur") ?: "blur"
+        } else if (key == KEY_NAV_BAR_BLUR_OPTION) {
+            _navBarBlurOption.value = sharedPreferences.getString(KEY_NAV_BAR_BLUR_OPTION, "blur") ?: "blur"
+        } else if (key == KEY_NAVIGATION_BLUR) {
+            _navigationBlur.value = sharedPreferences.getBoolean(KEY_NAVIGATION_BLUR, true)
+        } else if (key == KEY_ALL_IN_ONE_LIQUID_GLASS) {
+            _allInOneLiquidGlass.value = sharedPreferences.getBoolean(KEY_ALL_IN_ONE_LIQUID_GLASS, false)
+        } else if (key == KEY_SEEKBAR_STYLE) {
+            _seekBarStyle.value = sharedPreferences.getString(KEY_SEEKBAR_STYLE, "apple") ?: "apple"
+        } else if (key == KEY_IS_SUPPORTER) {
+            _isSupporter.value = sharedPreferences.getBoolean(KEY_IS_SUPPORTER, false)
+        } else if (key == KEY_AUTOMIX_ENABLED) {
+            _autoMixEnabled.value = sharedPreferences.getBoolean(KEY_AUTOMIX_ENABLED, false)
+        } else if (key == KEY_AUTOMIX_PERFORMANCE_MODE) {
+            _autoMixPerformanceMode.value = sharedPreferences.getString(KEY_AUTOMIX_PERFORMANCE_MODE, "BALANCED") ?: "BALANCED"
         }
     }
 
@@ -338,6 +456,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.edit {putBoolean("hide_nav_labels", hide)}
     }
 
+    // ── Slide Nav On Scroll ──────────────────────────────────────────────
+    private val _slideNavOnScroll = MutableStateFlow(prefs.getBoolean("slide_nav_on_scroll", true))
+    val slideNavOnScroll: StateFlow<Boolean> = _slideNavOnScroll.asStateFlow()
+
+    fun setSlideNavOnScroll(enabled: Boolean) {
+        _slideNavOnScroll.value = enabled
+        prefs.edit { putBoolean("slide_nav_on_scroll", enabled) }
+    }
+
 
 
     // ── Dynamic Nav Style ──────────────────────────────────────────────────
@@ -355,7 +482,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun setNavigationBlur(enabled: Boolean) {
         _navigationBlur.value = enabled
-        prefs.edit {putBoolean(KEY_NAVIGATION_BLUR, enabled)}
+        prefs.edit { putBoolean(KEY_NAVIGATION_BLUR, enabled) }
+        if (enabled) {
+            if (_allInOneLiquidGlass.value) {
+                _allInOneLiquidGlass.value = false
+                prefs.edit { putBoolean(KEY_ALL_IN_ONE_LIQUID_GLASS, false) }
+            }
+            setNavBarBlurOption("blur")
+            setMiniPlayerTheme("blur")
+        } else {
+            setNavBarBlurOption("static")
+            setMiniPlayerTheme("static")
+        }
     }
 
     // ── Tab Switch Blur ───────────────────────────────────────────────────
@@ -378,6 +516,45 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.edit {putBoolean(KEY_DYNAMIC_ALBUM_THEME, enabled)}
     }
 
+    // ── All-in-One Liquid Glass ───────────────────────────────────────────
+    private val _allInOneLiquidGlass = MutableStateFlow(prefs.getBoolean(KEY_ALL_IN_ONE_LIQUID_GLASS, false))
+    val allInOneLiquidGlass: StateFlow<Boolean> = _allInOneLiquidGlass.asStateFlow()
+
+    fun setAllInOneLiquidGlass(enabled: Boolean) {
+        _allInOneLiquidGlass.value = enabled
+        prefs.edit { putBoolean(KEY_ALL_IN_ONE_LIQUID_GLASS, enabled) }
+        if (enabled) {
+            if (_navigationBlur.value) {
+                _navigationBlur.value = false
+                prefs.edit { putBoolean(KEY_NAVIGATION_BLUR, false) }
+            }
+            setNavBarBlurOption("liquid")
+            setMiniPlayerTheme("liquid")
+        } else {
+            setNavBarBlurOption("static")
+            setMiniPlayerTheme("static")
+            if (_playerTheme.value == "liquid") {
+                setPlayerTheme("fluid")
+            }
+        }
+    }
+
+    fun setSolidState() {
+        _allInOneLiquidGlass.value = false
+        _navigationBlur.value = false
+        prefs.edit {
+            putBoolean(KEY_ALL_IN_ONE_LIQUID_GLASS, false)
+            putBoolean(KEY_NAVIGATION_BLUR, false)
+            putString(KEY_NAV_BAR_BLUR_OPTION, "static")
+            putString(KEY_MINI_PLAYER_THEME, "static")
+        }
+        _navBarBlurOption.value = "static"
+        _miniPlayerTheme.value = "static"
+        if (_playerTheme.value == "liquid") {
+            setPlayerTheme("fluid")
+        }
+    }
+
     // ── Player Theme ──────────────────────────────────────────────────
     private val _playerTheme = MutableStateFlow(prefs.getString(KEY_PLAYER_THEME, "fluid") ?: "fluid")
     val playerTheme: StateFlow<String> = _playerTheme.asStateFlow()
@@ -386,6 +563,43 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _playerTheme.value = theme
         prefs.edit { putString(KEY_PLAYER_THEME, theme) }
     }
+
+    // ── Mini Player Theme ──────────────────────────────────────────────
+    private val _miniPlayerTheme = MutableStateFlow(prefs.getString(KEY_MINI_PLAYER_THEME, "blur") ?: "blur")
+    val miniPlayerTheme: StateFlow<String> = _miniPlayerTheme.asStateFlow()
+
+    fun setMiniPlayerTheme(theme: String) {
+        _miniPlayerTheme.value = theme
+        prefs.edit { putString(KEY_MINI_PLAYER_THEME, theme) }
+    }
+
+    // ── Nav Bar Blur Option ────────────────────────────────────────────
+    private val _navBarBlurOption = MutableStateFlow(prefs.getString(KEY_NAV_BAR_BLUR_OPTION, "blur") ?: "blur")
+    val navBarBlurOption: StateFlow<String> = _navBarBlurOption.asStateFlow()
+
+    fun setNavBarBlurOption(option: String) {
+        _navBarBlurOption.value = option
+        prefs.edit { putString(KEY_NAV_BAR_BLUR_OPTION, option) }
+    }
+
+    // ── Navigation Style (Docked vs Floating) ─────────────────────────
+    private val _navStyle = MutableStateFlow(prefs.getString(KEY_NAV_STYLE, "docked") ?: "docked")
+    val navStyle: StateFlow<String> = _navStyle.asStateFlow()
+
+    fun setNavStyle(style: String) {
+        _navStyle.value = style
+        prefs.edit { putString(KEY_NAV_STYLE, style) }
+    }
+
+    // ── Seek Bar Style ────────────────────────────────────────────────
+    private val _seekBarStyle = MutableStateFlow(prefs.getString(KEY_SEEKBAR_STYLE, "apple") ?: "apple")
+    val seekBarStyle: StateFlow<String> = _seekBarStyle.asStateFlow()
+
+    fun setSeekBarStyle(style: String) {
+        _seekBarStyle.value = style
+        prefs.edit { putString(KEY_SEEKBAR_STYLE, style) }
+    }
+
 
     // ── Ignore Short Audio ──────────────────────────────────────────────────
     private val _ignoreShortAudio = MutableStateFlow(prefs.getBoolean(KEY_IGNORE_SHORT_AUDIO, false))
@@ -411,7 +625,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setDataSaver(enabled: Boolean) {
         _dataSaver.value = enabled
         prefs.edit {putBoolean(KEY_DATA_SAVER, enabled)}
-        com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor.clearCache()
+        com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor.clearAllCaches()
     }
 
     // ── Audio Quality ────────────────────────────────────────────────────────
@@ -421,7 +635,121 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setAudioQuality(quality: String) {
         _audioQuality.value = quality
         prefs.edit {putString(KEY_AUDIO_QUALITY, quality)}
-        com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor.clearCache()
+        com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor.clearAllCaches()
+    }
+
+    private val _forceOpus = MutableStateFlow(prefs.getBoolean(KEY_FORCE_OPUS, true))
+    val forceOpus: StateFlow<Boolean> = _forceOpus.asStateFlow()
+
+    fun setForceOpus(enabled: Boolean) {
+        _forceOpus.value = enabled
+        prefs.edit { putBoolean(KEY_FORCE_OPUS, enabled) }
+        com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor.clearAllCaches()
+    }
+
+    // ── Lossless Streaming (Source Pool FLAC) ─────────────────────────────────
+    private val _losslessStreamPool = MutableStateFlow(
+        prefs.getBoolean(com.codetrio.spatialflow.util.QualityModeSelector.KEY_LOSSLESS_SOURCE_POOL, true)
+    )
+    val losslessStreamPool: StateFlow<Boolean> = _losslessStreamPool.asStateFlow()
+
+    fun setLosslessStreamPool(enabled: Boolean) {
+        _losslessStreamPool.value = enabled
+        prefs.edit { putBoolean(com.codetrio.spatialflow.util.QualityModeSelector.KEY_LOSSLESS_SOURCE_POOL, enabled) }
+        com.codetrio.spatialflow.data.innertube.YouTubeMusic.clearCache()
+        com.codetrio.spatialflow.data.sourcepool.LosslessStreamResolver.clearCache()
+    }
+
+    // ── Lossless Provider & Priority Order ───────────────────────────────────
+    private val _losslessPriorityOrder = MutableStateFlow(
+        com.codetrio.spatialflow.util.QualityModeSelector.getLosslessPriorityOrder(context)
+    )
+    val losslessPriorityOrder: StateFlow<List<com.codetrio.spatialflow.data.sourcepool.LosslessProvider>> = _losslessPriorityOrder.asStateFlow()
+
+    private val _disabledLosslessProviders = MutableStateFlow(
+        com.codetrio.spatialflow.util.QualityModeSelector.getDisabledLosslessProviders(context)
+    )
+    val disabledLosslessProviders: StateFlow<Set<String>> = _disabledLosslessProviders.asStateFlow()
+
+    fun setLosslessPriorityOrder(order: List<com.codetrio.spatialflow.data.sourcepool.LosslessProvider>) {
+        _losslessPriorityOrder.value = order
+        com.codetrio.spatialflow.util.QualityModeSelector.setLosslessPriorityOrder(context, order)
+        com.codetrio.spatialflow.data.innertube.YouTubeMusic.clearCache()
+        com.codetrio.spatialflow.data.sourcepool.LosslessStreamResolver.clearCache()
+    }
+
+    fun toggleLosslessProvider(provider: com.codetrio.spatialflow.data.sourcepool.LosslessProvider, enabled: Boolean) {
+        val current = _disabledLosslessProviders.value.toMutableSet()
+        if (enabled) {
+            current.remove(provider.id)
+        } else {
+            current.add(provider.id)
+        }
+        _disabledLosslessProviders.value = current
+        com.codetrio.spatialflow.util.QualityModeSelector.setDisabledLosslessProviders(context, current)
+        com.codetrio.spatialflow.data.innertube.YouTubeMusic.clearCache()
+        com.codetrio.spatialflow.data.sourcepool.LosslessStreamResolver.clearCache()
+    }
+
+    fun resetLosslessPriorityOrder() {
+        val defaultOrder = com.codetrio.spatialflow.data.sourcepool.LosslessProvider.DEFAULT_PRIORITY_ORDER
+        _losslessPriorityOrder.value = defaultOrder
+        _disabledLosslessProviders.value = emptySet()
+        com.codetrio.spatialflow.util.QualityModeSelector.setLosslessPriorityOrder(context, defaultOrder)
+        com.codetrio.spatialflow.util.QualityModeSelector.setDisabledLosslessProviders(context, emptySet())
+        com.codetrio.spatialflow.data.innertube.YouTubeMusic.clearCache()
+        com.codetrio.spatialflow.data.sourcepool.LosslessStreamResolver.clearCache()
+    }
+
+    // ── USB DAC & Bit-Perfect ────────────────────────────────────────────────
+    private val _dacDirectMode = MutableStateFlow(
+        prefs.getBoolean(com.codetrio.spatialflow.util.QualityModeSelector.KEY_DAC_DIRECT_MODE, true)
+    )
+    val dacDirectMode: StateFlow<Boolean> = _dacDirectMode.asStateFlow()
+
+    fun setDacDirectMode(enabled: Boolean) {
+        _dacDirectMode.value = enabled
+        prefs.edit { putBoolean(com.codetrio.spatialflow.util.QualityModeSelector.KEY_DAC_DIRECT_MODE, enabled) }
+    }
+
+    private val _dacBitPerfect = MutableStateFlow(
+        prefs.getBoolean(com.codetrio.spatialflow.util.QualityModeSelector.KEY_DAC_BIT_PERFECT, true)
+    )
+    val dacBitPerfect: StateFlow<Boolean> = _dacBitPerfect.asStateFlow()
+
+    fun setDacBitPerfect(enabled: Boolean) {
+        _dacBitPerfect.value = enabled
+        com.codetrio.spatialflow.util.QualityModeSelector.setDacBitPerfect(context, enabled)
+    }
+
+    private val _nativeSampleRate = MutableStateFlow(
+        com.codetrio.spatialflow.util.QualityModeSelector.isNativeSampleRateEnabled(context)
+    )
+    val nativeSampleRate: StateFlow<Boolean> = _nativeSampleRate.asStateFlow()
+
+    fun setNativeSampleRate(enabled: Boolean) {
+        _nativeSampleRate.value = enabled
+        com.codetrio.spatialflow.util.QualityModeSelector.setNativeSampleRate(context, enabled)
+    }
+
+    private val _dacFixedVolume = MutableStateFlow(
+        prefs.getBoolean(com.codetrio.spatialflow.util.QualityModeSelector.KEY_DAC_FIXED_VOLUME, false)
+    )
+    val dacFixedVolume: StateFlow<Boolean> = _dacFixedVolume.asStateFlow()
+
+    fun setDacFixedVolume(enabled: Boolean) {
+        _dacFixedVolume.value = enabled
+        prefs.edit { putBoolean(com.codetrio.spatialflow.util.QualityModeSelector.KEY_DAC_FIXED_VOLUME, enabled) }
+    }
+
+    private val _dacBannerEnabled = MutableStateFlow(
+        prefs.getBoolean("dac_connection_banner", true)
+    )
+    val dacBannerEnabled: StateFlow<Boolean> = _dacBannerEnabled.asStateFlow()
+
+    fun setDacBannerEnabled(enabled: Boolean) {
+        _dacBannerEnabled.value = enabled
+        prefs.edit { putBoolean("dac_connection_banner", enabled) }
     }
 
     // ── Pause Listening History ────────────────────────────────────────────────
@@ -451,9 +779,28 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         prefs.edit {putBoolean("show_animated_art", show)}
     }
 
+    // ── Canvas Provider Priority Order ──────────────────────────────────────────
+    private val _canvasProviderOrder = MutableStateFlow(
+        (prefs.getString("canvas_provider_order", "spotify,apple_music") ?: "spotify,apple_music")
+            .split(",")
+            .map { it.trim() }
+            .filter { it in listOf("spotify", "apple_music") }
+    )
+    val canvasProviderOrder: StateFlow<List<String>> = _canvasProviderOrder.asStateFlow()
+
+    fun setCanvasProviderOrder(order: List<String>) {
+        _canvasProviderOrder.value = order
+        prefs.edit { putString("canvas_provider_order", order.joinToString(",")) }
+        com.codetrio.spatialflow.ui.player.canvas.CanvasArtworkPlaybackCache.clear()
+        com.codetrio.spatialflow.ui.player.canvas.SongCanvasProvider.clearCache()
+    }
+
     // ── Haptics Granular ─────────────────────────────────────────────────────
     private val _hapticPlayPause = MutableStateFlow(prefs.getBoolean(KEY_HAPTIC_PLAY_PAUSE, true))
     val hapticPlayPause: StateFlow<Boolean> = _hapticPlayPause.asStateFlow()
+
+    private val _hapticSliderTicks = MutableStateFlow(prefs.getBoolean(KEY_HAPTIC_SLIDER_TICKS, true))
+    val hapticSliderTicks: StateFlow<Boolean> = _hapticSliderTicks.asStateFlow()
 
     private val _hapticQueue = MutableStateFlow(prefs.getBoolean(KEY_HAPTIC_QUEUE, true))
     val hapticQueue: StateFlow<Boolean> = _hapticQueue.asStateFlow()
@@ -461,9 +808,20 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _hapticFavorite = MutableStateFlow(prefs.getBoolean(KEY_HAPTIC_FAVORITE, true))
     val hapticFavorite: StateFlow<Boolean> = _hapticFavorite.asStateFlow()
 
+    private val _hapticPauseInBackground = MutableStateFlow(prefs.getBoolean(KEY_HAPTIC_PAUSE_BACKGROUND, true))
+    val hapticPauseInBackground: StateFlow<Boolean> = _hapticPauseInBackground.asStateFlow()
+
+    private val _hapticBatterySaver = MutableStateFlow(prefs.getBoolean(KEY_HAPTIC_BATTERY_SAVER, true))
+    val hapticBatterySaver: StateFlow<Boolean> = _hapticBatterySaver.asStateFlow()
+
     fun setHapticPlayPause(enabled: Boolean) {
         _hapticPlayPause.value = enabled
         prefs.edit {putBoolean(KEY_HAPTIC_PLAY_PAUSE, enabled)}
+    }
+
+    fun setHapticSliderTicks(enabled: Boolean) {
+        _hapticSliderTicks.value = enabled
+        prefs.edit {putBoolean(KEY_HAPTIC_SLIDER_TICKS, enabled)}
     }
 
     fun setHapticQueue(enabled: Boolean) {
@@ -474,6 +832,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setHapticFavorite(enabled: Boolean) {
         _hapticFavorite.value = enabled
         prefs.edit {putBoolean(KEY_HAPTIC_FAVORITE, enabled)}
+    }
+
+    fun setHapticPauseInBackground(enabled: Boolean) {
+        _hapticPauseInBackground.value = enabled
+        prefs.edit {putBoolean(KEY_HAPTIC_PAUSE_BACKGROUND, enabled)}
+    }
+
+    fun setHapticBatterySaver(enabled: Boolean) {
+        _hapticBatterySaver.value = enabled
+        prefs.edit {putBoolean(KEY_HAPTIC_BATTERY_SAVER, enabled)}
     }
 
 
@@ -533,6 +901,54 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    private val _wifiOnlyDownload = MutableStateFlow(prefs.getBoolean(KEY_WIFI_ONLY_DOWNLOAD, false))
+    val wifiOnlyDownload: StateFlow<Boolean> = _wifiOnlyDownload.asStateFlow()
+
+    fun setWifiOnlyDownload(enabled: Boolean) {
+        _wifiOnlyDownload.value = enabled
+        prefs.edit { putBoolean(KEY_WIFI_ONLY_DOWNLOAD, enabled) }
+    }
+
+    private val _downloadAudioQuality = MutableStateFlow(prefs.getString(KEY_DOWNLOAD_AUDIO_QUALITY, "High") ?: "High")
+    val downloadAudioQuality: StateFlow<String> = _downloadAudioQuality.asStateFlow()
+
+    fun setDownloadAudioQuality(quality: String) {
+        _downloadAudioQuality.value = quality
+        prefs.edit { putString(KEY_DOWNLOAD_AUDIO_QUALITY, quality) }
+    }
+
+    private val _downloadAudioFormat = MutableStateFlow(prefs.getString(KEY_DOWNLOAD_AUDIO_FORMAT, "Opus") ?: "Opus")
+    val downloadAudioFormat: StateFlow<String> = _downloadAudioFormat.asStateFlow()
+
+    fun setDownloadAudioFormat(format: String) {
+        _downloadAudioFormat.value = format
+        prefs.edit { putString(KEY_DOWNLOAD_AUDIO_FORMAT, format) }
+    }
+
+    private val _autoDownloadFavorites = MutableStateFlow(prefs.getBoolean(KEY_AUTO_DOWNLOAD_FAVORITES, false))
+    val autoDownloadFavorites: StateFlow<Boolean> = _autoDownloadFavorites.asStateFlow()
+
+    fun setAutoDownloadFavorites(enabled: Boolean) {
+        _autoDownloadFavorites.value = enabled
+        prefs.edit { putBoolean(KEY_AUTO_DOWNLOAD_FAVORITES, enabled) }
+    }
+
+    private val _offlineLyrics = MutableStateFlow(prefs.getBoolean(KEY_OFFLINE_LYRICS, true))
+    val offlineLyrics: StateFlow<Boolean> = _offlineLyrics.asStateFlow()
+
+    fun setOfflineLyrics(enabled: Boolean) {
+        _offlineLyrics.value = enabled
+        prefs.edit { putBoolean(KEY_OFFLINE_LYRICS, enabled) }
+    }
+
+    private val _offlineOnlyMode = MutableStateFlow(prefs.getBoolean(KEY_OFFLINE_ONLY_MODE, false))
+    val offlineOnlyMode: StateFlow<Boolean> = _offlineOnlyMode.asStateFlow()
+
+    fun setOfflineOnlyMode(enabled: Boolean) {
+        _offlineOnlyMode.value = enabled
+        prefs.edit { putBoolean(KEY_OFFLINE_ONLY_MODE, enabled) }
+    }
+
     // Sizes in MB. -1 or 0 could mean unlimited, or we can use large numbers. We'll use Int (MB). 0 = unlimited.
     private val _songCacheMaxSize = MutableStateFlow(prefs.getInt("song_cache_max_size", 256)) // Default 256MB
     val songCacheMaxSize: StateFlow<Int> = _songCacheMaxSize.asStateFlow()
@@ -557,7 +973,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun performFullScan(playerSharedViewModel: PlayerSharedViewModel, onComplete: () -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             _isLibraryScanning.value = true
-            val pathsToScan = mutableListOf<java.io.File>()
+            val pathsToScan = mutableListOf<File>()
 
             // Resolve configured library paths
             val currentPaths = libraryPaths.value
@@ -565,7 +981,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 try {
                     val uri = Uri.parse(pathUriStr)
                     val absolutePath = getPathFromUri(uri)
-                    val file = java.io.File(absolutePath)
+                    val file = File(absolutePath)
                     if (file.exists() && file.isDirectory) {
                         pathsToScan.add(file)
                     }
@@ -576,9 +992,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
             // Fallback to standard dirs if no custom paths
             if (pathsToScan.isEmpty()) {
-                val musicDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MUSIC)
+                val musicDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
                 if (musicDir.exists()) pathsToScan.add(musicDir)
-                val downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+                val downloadDir = Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS)
                 if (downloadDir.exists()) pathsToScan.add(downloadDir)
             }
 
@@ -633,24 +1050,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch(Dispatchers.IO) {
             _isLibraryScanning.value = true
 
-            // 1. Clear song cache
+            // 1. Clear song and image cache safely via cacheDataSource
             try {
-                val mediaCacheDir = java.io.File(context.cacheDir, "media_cache")
-                deleteDir(mediaCacheDir)
+                cacheDataSource.clearCategory(CacheCategory.SONGS)
+                cacheDataSource.clearCategory(CacheCategory.IMAGES)
             } catch (e: Exception) {
-                android.util.Log.e("SettingsViewModel", "Failed to clear song cache", e)
+                android.util.Log.e("SettingsViewModel", "Failed to clear caches during rebuild", e)
             }
-
-            // 2. Clear image cache
-            try {
-                val imageCacheDir = java.io.File(context.cacheDir, "image_cache")
-                deleteDir(imageCacheDir)
-            } catch (e: Exception) {
-                android.util.Log.e("SettingsViewModel", "Failed to clear image cache", e)
-            }
-
-            // Update cache size state in ViewModel
-            calculateCacheSize()
 
             // 3. Force perform full scan
             performFullScan(playerSharedViewModel) {
@@ -661,46 +1067,358 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     // ── Backup & Restore ──────────────────────────────────────────────────────
-    fun exportBackup(context: Context, uri: Uri, onResult: (Boolean, String) -> Unit) {
+    data class BackupSummaryData(
+        val uri: Uri,
+        val fileName: String = "",
+        val fileSizeBytes: Long = 0L,
+        val version: Int,
+        val timestamp: Long,
+        val device: String?,
+        val settingsCount: Int,
+        val favoritesCount: Int,
+        val playlistsCount: Int,
+        val songsCount: Int,
+        val historyCount: Int,
+        val downloadsManifestCount: Int,
+        val rawJsonObject: com.google.gson.JsonObject
+    )
+
+    enum class RestoreMode {
+        MERGE, OVERWRITE
+    }
+
+    val localBackups = MutableStateFlow<List<BackupSummaryData>>(emptyList())
+    val discoveredBackupPrompt = MutableStateFlow<BackupSummaryData?>(null)
+    val autoBackupEnabled = MutableStateFlow(prefs.getBoolean("auto_backup_enabled", false))
+    val autoBackupFreq = MutableStateFlow(prefs.getString("auto_backup_freq", "weekly") ?: "weekly")
+
+    init {
+        scanLocalBackups(context)
+    }
+
+    fun dismissDiscoveredBackupPrompt() {
+        prefs.edit().putBoolean("dismissed_restore_prompt", true).apply()
+        discoveredBackupPrompt.value = null
+    }
+
+    fun setAutoBackupEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("auto_backup_enabled", enabled).apply()
+        autoBackupEnabled.value = enabled
+    }
+
+    fun setAutoBackupFreq(freq: String) {
+        prefs.edit().putString("auto_backup_freq", freq).apply()
+        autoBackupFreq.value = freq
+    }
+
+    fun getBackupsDir(): File {
+        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "SpatialFlow/Backups")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    fun scanLocalBackups(context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val candidateDirs = listOf(
+                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "SpatialFlow/Backups"),
+                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "SpatialFlow"),
+                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "SpatialFlow/Backups"),
+                File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "SpatialFlow"),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+            )
+
+            val foundFiles = mutableSetOf<File>()
+            candidateDirs.forEach { dir ->
+                try {
+                    if (dir.exists() && dir.isDirectory) {
+                        val files = dir.listFiles { _, name ->
+                            val lower = name.lowercase()
+                            lower.endsWith(".json") && (
+                                lower == "backup.json" ||
+                                lower.contains("spatialflow") ||
+                                lower.contains("backup")
+                            )
+                        } ?: emptyArray()
+                        foundFiles.addAll(files)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("SettingsViewModel", "Failed to access candidate dir: ${dir.absolutePath}", e)
+                }
+            }
+
+            val list = mutableListOf<BackupSummaryData>()
+            val gson = com.google.gson.Gson()
+            foundFiles.forEach { file ->
+                try {
+                    val jsonString = file.readText()
+                    val backupObj = gson.fromJson(jsonString, com.google.gson.JsonObject::class.java) ?: return@forEach
+
+                    val hasBackupMarkers = backupObj.has("settings") ||
+                        backupObj.has("favorites") ||
+                        backupObj.has("playlists") ||
+                        backupObj.has("playlist_songs") ||
+                        backupObj.has("version") ||
+                        backupObj.has("downloads_manifest") ||
+                        file.name.equals("backup.json", ignoreCase = true)
+
+                    if (!hasBackupMarkers) return@forEach
+
+                    val version = if (backupObj.has("version")) backupObj.get("version").asInt else 1
+                    val timestamp = if (backupObj.has("timestamp")) backupObj.get("timestamp").asLong else file.lastModified()
+                    val device = if (backupObj.has("device")) backupObj.get("device").asString else null
+
+                    val settingsCount = if (backupObj.has("settings")) backupObj.getAsJsonObject("settings")?.size() ?: 0 else 0
+                    val favoritesCount = if (backupObj.has("favorites")) backupObj.getAsJsonArray("favorites")?.size() ?: 0 else 0
+                    val playlistsCount = if (backupObj.has("playlists")) backupObj.getAsJsonArray("playlists")?.size() ?: 0 else 0
+                    val songsCount = if (backupObj.has("playlist_songs")) backupObj.getAsJsonArray("playlist_songs")?.size() ?: 0 else 0
+                    val historyCount = if (backupObj.has("history")) backupObj.getAsJsonArray("history")?.size() ?: 0 else 0
+                    val downloadsManifestCount = if (backupObj.has("downloads_manifest")) backupObj.getAsJsonArray("downloads_manifest")?.size() ?: 0 else 0
+
+                    list.add(
+                        BackupSummaryData(
+                            uri = Uri.fromFile(file),
+                            fileName = file.name,
+                            fileSizeBytes = file.length(),
+                            version = version,
+                            timestamp = timestamp,
+                            device = device,
+                            settingsCount = settingsCount,
+                            favoritesCount = favoritesCount,
+                            playlistsCount = playlistsCount,
+                            songsCount = songsCount,
+                            historyCount = historyCount,
+                            downloadsManifestCount = downloadsManifestCount,
+                            rawJsonObject = backupObj
+                        )
+                    )
+                } catch (e: Exception) {
+                    android.util.Log.w("SettingsViewModel", "Skipping invalid backup file ${file.name}", e)
+                }
+            }
+            val sorted = list.sortedByDescending { it.timestamp }
+            withContext(Dispatchers.Main) {
+                localBackups.value = sorted
+                val hasRestored = prefs.getBoolean("has_restored_backup", false)
+                val dismissedPrompt = prefs.getBoolean("dismissed_restore_prompt", false)
+                if (!hasRestored && !dismissedPrompt && sorted.isNotEmpty()) {
+                    discoveredBackupPrompt.value = sorted.firstOrNull()
+                }
+            }
+        }
+    }
+
+    fun exportBackupDirectToDefaultFolder(
+        context: Context,
+        includeSettings: Boolean = true,
+        includeFavorites: Boolean = true,
+        includePlaylists: Boolean = true,
+        includeHistory: Boolean = true,
+        includeDownloadsManifest: Boolean = true,
+        onResult: (Boolean, String, Uri?) -> Unit
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val settingsMap = prefs.all
-                val favManager = com.codetrio.spatialflow.util.FavoritesManager(context)
-                val favoritesList = favManager.favoriteIds.toList()
+                val dir = getBackupsDir()
+                val timeName = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(java.util.Date())
+                val destFile = File(dir, "spatialflow_backup_$timeName.json")
 
                 val db = com.codetrio.spatialflow.data.db.MusicDatabase.getDatabase(context)
                 val playlistDao = db.playlistDao()
 
-                // Read playlists and songs using Flow.first() extension
-                val playlists = playlistDao.getAllPlaylists().first()
-                val playlistSongsList = mutableListOf<com.codetrio.spatialflow.data.db.PlaylistSongEntity>()
-                playlists.forEach { playlist: com.codetrio.spatialflow.data.db.PlaylistEntity ->
-                    val songs = playlistDao.getSongsForPlaylist(playlist.id).first()
-                    playlistSongsList.addAll(songs)
-                }
-
                 val backupObject = com.google.gson.JsonObject().apply {
-                    addProperty("version", 1)
+                    addProperty("version", 2)
+                    addProperty("timestamp", System.currentTimeMillis())
+                    addProperty("app_version", "1.0.0")
+                    addProperty("device", "${Build.MANUFACTURER} ${Build.MODEL}")
 
-                    val settingsObj = com.google.gson.JsonObject()
-                    settingsMap.forEach { (key, value) ->
-                        when (value) {
-                            is Boolean -> settingsObj.addProperty(key, value)
-                            is Float -> settingsObj.addProperty(key, value)
-                            is Int -> settingsObj.addProperty(key, value)
-                            is Long -> settingsObj.addProperty(key, value)
-                            is String -> settingsObj.addProperty(key, value)
+                    if (includeSettings) {
+                        val settingsObj = com.google.gson.JsonObject()
+                        prefs.all.forEach { (key, value) ->
+                            when (value) {
+                                is Boolean -> settingsObj.addProperty(key, value)
+                                is Float -> settingsObj.addProperty(key, value)
+                                is Int -> settingsObj.addProperty(key, value)
+                                is Long -> settingsObj.addProperty(key, value)
+                                is String -> settingsObj.addProperty(key, value)
+                            }
                         }
+                        add("settings", settingsObj)
                     }
-                    add("settings", settingsObj)
 
-                    val favArray = com.google.gson.JsonArray()
-                    favoritesList.forEach { favArray.add(it) }
-                    add("favorites", favArray)
+                    if (includeFavorites) {
+                        val favManager = com.codetrio.spatialflow.util.FavoritesManager(context)
+                        val favArray = com.google.gson.JsonArray()
+                        favManager.favoriteIds.forEach { favArray.add(it) }
+                        add("favorites", favArray)
+                    }
 
                     val gson = com.google.gson.Gson()
-                    add("playlists", gson.toJsonTree(playlists))
-                    add("playlist_songs", gson.toJsonTree(playlistSongsList))
+                    if (includePlaylists) {
+                        val playlists = playlistDao.getAllPlaylists().first()
+                        val playlistSongsList = mutableListOf<com.codetrio.spatialflow.data.db.PlaylistSongEntity>()
+                        playlists.forEach { playlist ->
+                            val songs = playlistDao.getSongsForPlaylist(playlist.id).first()
+                            playlistSongsList.addAll(songs)
+                        }
+                        add("playlists", gson.toJsonTree(playlists))
+                        add("playlist_songs", gson.toJsonTree(playlistSongsList))
+                    }
+
+                    if (includeHistory) {
+                        val historyList = playlistDao.getAllHistoryEventsSync()
+                        add("history", gson.toJsonTree(historyList))
+                    }
+
+                    if (includeDownloadsManifest) {
+                        val downloadedSongs = com.codetrio.spatialflow.util.SongDownloader.getAllDownloadedSongs(context)
+                        add("downloads_manifest", gson.toJsonTree(downloadedSongs))
+                    }
+                }
+
+                destFile.writeText(backupObject.toString())
+                scanLocalBackups(context)
+
+                withContext(Dispatchers.Main) {
+                    onResult(true, "Saved to SpatialFlow/Backups/${destFile.name}", Uri.fromFile(destFile))
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsViewModel", "Failed to export backup to default folder", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Export failed: ${e.localizedMessage}", null)
+                }
+            }
+        }
+    }
+
+    fun deleteLocalBackup(context: Context, summary: BackupSummaryData) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (summary.uri.scheme == "file") {
+                    val file = File(summary.uri.path ?: "")
+                    if (file.exists()) file.delete()
+                }
+                scanLocalBackups(context)
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsViewModel", "Failed to delete backup file", e)
+            }
+        }
+    }
+
+    fun inspectBackupFile(context: Context, uri: Uri, onResult: (BackupSummaryData?, String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val jsonString = context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                    inputStream.bufferedReader().use { it.readText() }
+                } ?: throw Exception("Could not read file stream")
+
+                val gson = com.google.gson.Gson()
+                val backupObj = gson.fromJson(jsonString, com.google.gson.JsonObject::class.java)
+
+                val version = if (backupObj.has("version")) backupObj.get("version").asInt else 1
+                val timestamp = if (backupObj.has("timestamp")) backupObj.get("timestamp").asLong else 0L
+                val device = if (backupObj.has("device")) backupObj.get("device").asString else null
+
+                val settingsCount = if (backupObj.has("settings")) backupObj.getAsJsonObject("settings").size() else 0
+                val favoritesCount = if (backupObj.has("favorites")) backupObj.getAsJsonArray("favorites").size() else 0
+                val playlistsCount = if (backupObj.has("playlists")) backupObj.getAsJsonArray("playlists").size() else 0
+                val songsCount = if (backupObj.has("playlist_songs")) backupObj.getAsJsonArray("playlist_songs").size() else 0
+                val historyCount = if (backupObj.has("history")) backupObj.getAsJsonArray("history").size() else 0
+                val downloadsManifestCount = if (backupObj.has("downloads_manifest")) backupObj.getAsJsonArray("downloads_manifest").size() else 0
+
+                val fileName = if (uri.scheme == "file") File(uri.path ?: "").name else "External Backup"
+                val fileSizeBytes = if (uri.scheme == "file") File(uri.path ?: "").length() else 0L
+
+                val summary = BackupSummaryData(
+                    uri = uri,
+                    fileName = fileName,
+                    fileSizeBytes = fileSizeBytes,
+                    version = version,
+                    timestamp = timestamp,
+                    device = device,
+                    settingsCount = settingsCount,
+                    favoritesCount = favoritesCount,
+                    playlistsCount = playlistsCount,
+                    songsCount = songsCount,
+                    historyCount = historyCount,
+                    downloadsManifestCount = downloadsManifestCount,
+                    rawJsonObject = backupObj
+                )
+                withContext(Dispatchers.Main) {
+                    onResult(summary, null)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsViewModel", "Failed to inspect backup file", e)
+                withContext(Dispatchers.Main) {
+                    onResult(null, "Failed to read backup: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    fun exportBackup(
+        context: Context,
+        uri: Uri,
+        includeSettings: Boolean = true,
+        includeFavorites: Boolean = true,
+        includePlaylists: Boolean = true,
+        includeHistory: Boolean = true,
+        includeDownloadsManifest: Boolean = true,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val db = com.codetrio.spatialflow.data.db.MusicDatabase.getDatabase(context)
+                val playlistDao = db.playlistDao()
+
+                val backupObject = com.google.gson.JsonObject().apply {
+                    addProperty("version", 2)
+                    addProperty("timestamp", System.currentTimeMillis())
+                    addProperty("app_version", "1.0.0")
+                    addProperty("device", "${Build.MANUFACTURER} ${Build.MODEL}")
+
+                    if (includeSettings) {
+                        val settingsObj = com.google.gson.JsonObject()
+                        prefs.all.forEach { (key, value) ->
+                            when (value) {
+                                is Boolean -> settingsObj.addProperty(key, value)
+                                is Float -> settingsObj.addProperty(key, value)
+                                is Int -> settingsObj.addProperty(key, value)
+                                is Long -> settingsObj.addProperty(key, value)
+                                is String -> settingsObj.addProperty(key, value)
+                            }
+                        }
+                        add("settings", settingsObj)
+                    }
+
+                    if (includeFavorites) {
+                        val favManager = com.codetrio.spatialflow.util.FavoritesManager(context)
+                        val favArray = com.google.gson.JsonArray()
+                        favManager.favoriteIds.forEach { favArray.add(it) }
+                        add("favorites", favArray)
+                    }
+
+                    val gson = com.google.gson.Gson()
+                    if (includePlaylists) {
+                        val playlists = playlistDao.getAllPlaylists().first()
+                        val playlistSongsList = mutableListOf<com.codetrio.spatialflow.data.db.PlaylistSongEntity>()
+                        playlists.forEach { playlist ->
+                            val songs = playlistDao.getSongsForPlaylist(playlist.id).first()
+                            playlistSongsList.addAll(songs)
+                        }
+                        add("playlists", gson.toJsonTree(playlists))
+                        add("playlist_songs", gson.toJsonTree(playlistSongsList))
+                    }
+
+                    if (includeHistory) {
+                        val historyList = playlistDao.getAllHistoryEventsSync()
+                        add("history", gson.toJsonTree(historyList))
+                    }
+
+                    if (includeDownloadsManifest) {
+                        val downloadedSongs = com.codetrio.spatialflow.util.SongDownloader.getAllDownloadedSongs(context)
+                        add("downloads_manifest", gson.toJsonTree(downloadedSongs))
+                    }
                 }
 
                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
@@ -719,17 +1437,30 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun importBackup(context: Context, uri: Uri, onResult: (Boolean, String) -> Unit) {
+    fun importBackup(
+        context: Context,
+        summary: BackupSummaryData,
+        restoreMode: RestoreMode = RestoreMode.MERGE,
+        restoreSettings: Boolean = true,
+        restoreFavorites: Boolean = true,
+        restorePlaylists: Boolean = true,
+        restoreHistory: Boolean = true,
+        restoreDownloadsManifest: Boolean = true,
+        onResult: (Boolean, String, List<com.codetrio.spatialflow.model.SongItem>) -> Unit
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val jsonString = context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                    inputStream.bufferedReader().use { it.readText() }
-                } ?: throw Exception("Could not read backup file")
-
+                val backupObject = summary.rawJsonObject
                 val gson = com.google.gson.Gson()
-                val backupObject = gson.fromJson(jsonString, com.google.gson.JsonObject::class.java)
+                val db = com.codetrio.spatialflow.data.db.MusicDatabase.getDatabase(context)
+                val playlistDao = db.playlistDao()
+                val favManager = com.codetrio.spatialflow.util.FavoritesManager(context)
 
-                if (backupObject.has("settings")) {
+                if (restoreMode == RestoreMode.OVERWRITE) {
+                    if (restoreHistory) playlistDao.clearAllHistory()
+                }
+
+                if (restoreSettings && backupObject.has("settings")) {
                     val settingsObj = backupObject.getAsJsonObject("settings")
                     prefs.edit {
                         settingsObj.entrySet().forEach { (key, jsonElement) ->
@@ -757,10 +1488,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     _darkMode.value = prefs.getBoolean(KEY_DARK_MODE, true)
                     _amoledBlack.value = prefs.getBoolean(KEY_AMOLED_BLACK, false)
                     _showAnimatedArt.value = prefs.getBoolean("show_animated_art", true)
+                    val orderRaw = prefs.getString("canvas_provider_order", "spotify,apple_music") ?: "spotify,apple_music"
+                    _canvasProviderOrder.value = orderRaw.split(",").map { it.trim() }.filter { it in listOf("spotify", "apple_music") }
                     _dynamicAlbumTheme.value = prefs.getBoolean(KEY_DYNAMIC_ALBUM_THEME, true)
                     _vibrationStrength.value = prefs.getFloat(KEY_VIBRATION_STRENGTH, 80f)
                     _crossfadeEnabled.value = prefs.getBoolean(KEY_CROSSFADE_ENABLED, false)
                     _crossfadeDuration.value = prefs.getFloat(KEY_CROSSFADE_DURATION, 3f)
+                    _crossfadeMode.value = prefs.getString(KEY_CROSSFADE_MODE, "auto") ?: "auto"
+                    _autoMixEnabled.value = prefs.getBoolean(KEY_AUTOMIX_ENABLED, false)
+                    _autoMixPerformanceMode.value = prefs.getString(KEY_AUTOMIX_PERFORMANCE_MODE, "BALANCED") ?: "BALANCED"
                     _audioFocus.value = prefs.getBoolean(KEY_AUDIO_FOCUS, true)
                     _dataSaver.value = prefs.getBoolean(KEY_DATA_SAVER, false)
                     _audioQuality.value = prefs.getString(KEY_AUDIO_QUALITY, "High") ?: "High"
@@ -771,16 +1507,22 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     _hapticPlayPause.value = prefs.getBoolean(KEY_HAPTIC_PLAY_PAUSE, true)
                     _hapticQueue.value = prefs.getBoolean(KEY_HAPTIC_QUEUE, true)
                     _hapticFavorite.value = prefs.getBoolean(KEY_HAPTIC_FAVORITE, true)
+                    _hapticPauseInBackground.value = prefs.getBoolean(KEY_HAPTIC_PAUSE_BACKGROUND, true)
                     _volumeNormalizationEnabled.value = prefs.getBoolean(KEY_VOLUME_NORMALIZATION_ENABLED, false)
                     _targetLufs.value = prefs.getFloat(KEY_TARGET_LUFS, -14f)
                     _navigationBlur.value = prefs.getBoolean(KEY_NAVIGATION_BLUR, true)
                     _forceHighRefreshRate.value = prefs.getBoolean("force_high_refresh_rate", false)
                     _playerTheme.value = prefs.getString(KEY_PLAYER_THEME, "fluid") ?: "fluid"
+                    _miniPlayerTheme.value = prefs.getString(KEY_MINI_PLAYER_THEME, "blur") ?: "blur"
+                    _navBarBlurOption.value = prefs.getString(KEY_NAV_BAR_BLUR_OPTION, "blur") ?: "blur"
+                    _navStyle.value = prefs.getString(KEY_NAV_STYLE, "docked") ?: "docked"
+                    _disconnectAction.value = prefs.getString(KEY_DISCONNECT_ACTION, "pause") ?: "pause"
+                    _resumeOnConnect.value = prefs.getBoolean(KEY_RESUME_ON_CONNECT, false)
+                    _seekBarStyle.value = prefs.getString(KEY_SEEKBAR_STYLE, "apple") ?: "apple"
                 }
 
-                if (backupObject.has("favorites")) {
+                if (restoreFavorites && backupObject.has("favorites")) {
                     val favArray = backupObject.getAsJsonArray("favorites")
-                    val favManager = com.codetrio.spatialflow.util.FavoritesManager(context)
                     favArray.forEach { element ->
                         val idStr = element.asString
                         idStr.toLongOrNull()?.let { idLong ->
@@ -789,10 +1531,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     }
                 }
 
-                val db = com.codetrio.spatialflow.data.db.MusicDatabase.getDatabase(context)
-                val playlistDao = db.playlistDao()
-
-                if (backupObject.has("playlists")) {
+                if (restorePlaylists && backupObject.has("playlists")) {
                     val typeTokenPlaylists = object :
                         com.google.gson.reflect.TypeToken<List<com.codetrio.spatialflow.data.db.PlaylistEntity>>() {}.type
                     val playlistsList: List<com.codetrio.spatialflow.data.db.PlaylistEntity> =
@@ -803,7 +1542,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     }
                 }
 
-                if (backupObject.has("playlist_songs")) {
+                if (restorePlaylists && backupObject.has("playlist_songs")) {
                     val typeTokenSongs = object : com.google.gson.reflect.TypeToken<List<com.codetrio.spatialflow.data.db.PlaylistSongEntity>>() {}.type
                     val songsList: List<com.codetrio.spatialflow.data.db.PlaylistSongEntity> = gson.fromJson(backupObject.get("playlist_songs"), typeTokenSongs)
 
@@ -812,54 +1551,81 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     }
                 }
 
+                if (restoreHistory && backupObject.has("history")) {
+                    val typeTokenHistory = object : com.google.gson.reflect.TypeToken<List<com.codetrio.spatialflow.data.db.HistoryEventEntity>>() {}.type
+                    val historyEvents: List<com.codetrio.spatialflow.data.db.HistoryEventEntity> = gson.fromJson(backupObject.get("history"), typeTokenHistory)
+
+                    historyEvents.forEach { event ->
+                        playlistDao.insertHistoryEvent(event)
+                    }
+                }
+
+                val manifestSongs = mutableListOf<com.codetrio.spatialflow.model.SongItem>()
+                if (restoreDownloadsManifest && backupObject.has("downloads_manifest")) {
+                    val typeTokenManifest = object : com.google.gson.reflect.TypeToken<List<com.codetrio.spatialflow.model.SongItem>>() {}.type
+                    val items: List<com.codetrio.spatialflow.model.SongItem> = gson.fromJson(backupObject.get("downloads_manifest"), typeTokenManifest)
+                    manifestSongs.addAll(items)
+                }
+
                 withContext(Dispatchers.Main) {
-                    onResult(true, "Backup imported successfully")
+                    prefs.edit().putBoolean("has_restored_backup", true).apply()
+                    discoveredBackupPrompt.value = null
+                    onResult(true, "Backup imported successfully", manifestSongs)
                 }
             } catch (e: Exception) {
                 android.util.Log.e("SettingsViewModel", "Failed to import backup", e)
                 withContext(Dispatchers.Main) {
-                    onResult(false, "Import failed: ${e.localizedMessage}")
+                    onResult(false, "Import failed: ${e.localizedMessage}", emptyList())
                 }
             }
         }
     }
 
     // ── Cache ────────────────────────────────────────────────────────────────
+    val cacheBreakdown: StateFlow<CacheBreakdown>
+        get() = cacheDataSource.cacheBreakdown
+
     private val _songCacheSize = MutableStateFlow("Calculating...")
     val songCacheSize: StateFlow<String> = _songCacheSize.asStateFlow()
 
     private val _imageCacheSize = MutableStateFlow("Calculating...")
     val imageCacheSize: StateFlow<String> = _imageCacheSize.asStateFlow()
 
-    fun calculateCacheSize() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val imageCacheDir = File(context.cacheDir, "image_cache")
-            val imageSize = getDirSize(imageCacheDir)
-            
-            val mediaCacheDir = File(context.cacheDir, "media_cache")
-            val songSize = getDirSize(mediaCacheDir)
+    init {
+        viewModelScope.launch {
+            cacheDataSource.cacheBreakdown.collect { breakdown ->
+                _songCacheSize.value = breakdown.categories[CacheCategory.SONGS]?.formattedSize ?: "0 B"
+                _imageCacheSize.value = breakdown.categories[CacheCategory.IMAGES]?.formattedSize ?: "0 B"
+            }
+        }
+    }
 
-            _imageCacheSize.value = formatFileSize(imageSize)
-            _songCacheSize.value = formatFileSize(songSize)
+    fun calculateCacheSize() {
+        viewModelScope.launch {
+            cacheDataSource.refreshCacheSizes()
+        }
+    }
+
+    fun clearCategoryCache(category: CacheCategory, onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            cacheDataSource.clearCategory(category)
+            withContext(Dispatchers.Main) { onComplete() }
+        }
+    }
+
+    fun clearAllCaches(onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            cacheDataSource.clearAllCaches()
+            withContext(Dispatchers.Main) { onComplete() }
         }
     }
 
     fun clearSongCache(onComplete: () -> Unit) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val mediaCacheDir = File(context.cacheDir, "media_cache")
-            deleteDir(mediaCacheDir)
-            calculateCacheSize()
-            withContext(Dispatchers.Main) { onComplete() }
-        }
+        clearCategoryCache(CacheCategory.SONGS, onComplete)
     }
 
     fun clearImageCache(onComplete: () -> Unit) {
-        viewModelScope.launch(Dispatchers.IO) {
-            val imageCacheDir = File(context.cacheDir, "image_cache")
-            deleteDir(imageCacheDir)
-            calculateCacheSize()
-            withContext(Dispatchers.Main) { onComplete() }
-        }
+        clearCategoryCache(CacheCategory.IMAGES, onComplete)
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -892,12 +1658,18 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     companion object {
         const val PREFS_NAME = "AppSettings"
+        const val KEY_IS_SUPPORTER = "is_supporter"
+        const val KEY_AWAITING_SUPPORTER_REWARD = "awaiting_supporter_reward"
+        const val KEY_SUPPORTER_REWARD_LAUNCH_TIME = "supporter_reward_launch_time"
         const val KEY_DARK_MODE = "dark_mode"
         const val KEY_NAVIGATION_BLUR = "navigation_blur"
         const val KEY_TAB_SWITCH_BLUR = "tab_switch_blur"
         const val KEY_VIBRATION_STRENGTH = "vibration_strength"
         const val KEY_CROSSFADE_ENABLED = "crossfade_enabled"
         const val KEY_CROSSFADE_DURATION = "crossfade_duration"
+        const val KEY_CROSSFADE_MODE = "crossfade_mode"
+        const val KEY_AUTOMIX_ENABLED = "automix_enabled"
+        const val KEY_AUTOMIX_PERFORMANCE_MODE = "automix_performance_mode"
         const val KEY_AUDIO_FOCUS = "audio_focus"
         const val KEY_LIBRARY_PATHS = "library_paths"
         const val KEY_HIDDEN_FOLDERS = "hidden_folders"
@@ -907,13 +1679,33 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         const val KEY_DATA_SAVER = "data_saver"
         const val KEY_AUDIO_QUALITY = "audio_quality"
         const val KEY_SYNC_FREQUENCY = "sync_frequency"
+        const val KEY_HAPTICS_ENABLED = "haptics_enabled"
         const val KEY_HAPTIC_PLAY_PAUSE = "haptic_play_pause"
         const val KEY_HAPTIC_QUEUE = "haptic_queue"
         const val KEY_HAPTIC_FAVORITE = "haptic_favorite"
+        const val KEY_HAPTIC_PAUSE_BACKGROUND = "haptic_pause_background"
+        const val KEY_HAPTIC_AUDIO_MODE = "haptic_audio_mode"
+        const val KEY_HAPTIC_PUNCH_BOOST = "haptic_punch_boost"
+        const val KEY_HAPTIC_SLIDER_TICKS = "haptic_slider_ticks"
+        const val KEY_HAPTIC_BATTERY_SAVER = "haptic_battery_saver"
         const val KEY_DYNAMIC_ALBUM_THEME = "dynamic_album_theme"
         const val KEY_VOLUME_NORMALIZATION_ENABLED = "volume_normalization_enabled"
         const val KEY_TARGET_LUFS = "target_lufs"
+        const val KEY_ALL_IN_ONE_LIQUID_GLASS = "all_in_one_liquid_glass"
         const val KEY_PLAYER_THEME = "player_theme"
+        const val KEY_MINI_PLAYER_THEME = "mini_player_theme"
+        const val KEY_NAV_BAR_BLUR_OPTION = "nav_bar_blur_option"
+        const val KEY_NAV_STYLE = "nav_style"
+        const val KEY_WIFI_ONLY_DOWNLOAD = "wifi_only_download"
+        const val KEY_DOWNLOAD_AUDIO_QUALITY = "download_audio_quality"
+        const val KEY_DOWNLOAD_AUDIO_FORMAT = "download_audio_format"
+        const val KEY_AUTO_DOWNLOAD_FAVORITES = "auto_download_favorites"
+        const val KEY_OFFLINE_LYRICS = "offline_lyrics"
+        const val KEY_OFFLINE_ONLY_MODE = "offline_only_mode"
+        const val KEY_DISCONNECT_ACTION = "disconnect_action"
+        const val KEY_RESUME_ON_CONNECT = "resume_on_connect"
+        const val KEY_FORCE_OPUS = "force_opus"
+        const val KEY_SEEKBAR_STYLE = "seekbar_style"
     }
 }
 
@@ -933,7 +1725,7 @@ private fun getPathFromUri(uri: Uri): String {
             val type = split[0]
             val relativePath = split[1]
             return if ("primary" == type.lowercase()) {
-                android.os.Environment.getExternalStorageDirectory().toString() + "/" + relativePath
+                Environment.getExternalStorageDirectory().toString() + "/" + relativePath
             } else {
                 "/storage/$type/$relativePath"
             }
@@ -954,31 +1746,19 @@ private fun Context.findActivity(): Activity? {
 @RequiresApi(Build.VERSION_CODES.Q)
 fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavController) {
     val enterAnim: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
-        slideInHorizontally(
-            initialOffsetX = { it },
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
-        ) + fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.95f, animationSpec = tween(220))
+        aospSharedAxisEnter()
     }
 
     val exitAnim: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
-        slideOutHorizontally(
-            targetOffsetX = { -it / 3 },
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
-        ) + fadeOut(animationSpec = tween(220)) + scaleOut(targetScale = 0.95f, animationSpec = tween(220))
+        aospSharedAxisExit()
     }
 
     val popEnterAnim: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.EnterTransition = {
-        slideInHorizontally(
-            initialOffsetX = { -it / 3 },
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
-        ) + fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.95f, animationSpec = tween(220))
+        aospSharedAxisPopEnter()
     }
 
     val popExitAnim: androidx.compose.animation.AnimatedContentTransitionScope<androidx.navigation.NavBackStackEntry>.() -> androidx.compose.animation.ExitTransition = {
-        slideOutHorizontally(
-            targetOffsetX = { it },
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)
-        ) + fadeOut(animationSpec = tween(220)) + scaleOut(targetScale = 0.95f, animationSpec = tween(220))
+        aospSharedAxisPopExit()
     }
 
     composableWithBlur(SettingsRoute.Main.route) {
@@ -1005,8 +1785,10 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
         val ignoreShortAudio by viewModel.ignoreShortAudio.collectAsStateWithLifecycle()
         val ignoreShortAudioDuration by viewModel.ignoreShortAudioDuration.collectAsStateWithLifecycle()
         val hiddenFolders by viewModel.hiddenFolders.collectAsStateWithLifecycle()
-
-        LaunchedEffect(Unit) { viewModel.calculateCacheSize() }
+        LaunchedEffect(Unit) {
+            kotlinx.coroutines.delay(350)
+            viewModel.calculateCacheSize()
+        }
 
         val directoryPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
             contract = ActivityResultContracts.OpenDocumentTree()
@@ -1048,6 +1830,7 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
         }
 
         val isScanning by viewModel.isLibraryScanning.collectAsStateWithLifecycle()
+        val cacheBreakdown by viewModel.cacheBreakdown.collectAsStateWithLifecycle()
         val playerSharedViewModel: PlayerSharedViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
 
         MusicManagementScreen(
@@ -1055,6 +1838,20 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
             libraryPaths = libraryPaths,
             onRemovePath = { viewModel.removeLibraryPath(it) },
             onAddPathClick = { directoryPickerLauncher.launch(null) },
+            cacheBreakdown = cacheBreakdown,
+            onClearCategory = { category ->
+                viewModel.clearCategoryCache(category) {
+                    (context as? MainActivity)?.showSnackbar("${category.displayName} cleared", 0)
+                }
+            },
+            onClearAllCaches = {
+                viewModel.clearAllCaches {
+                    (context as? MainActivity)?.showSnackbar("All cache cleared", 0)
+                }
+            },
+            onRefreshCache = {
+                viewModel.calculateCacheSize()
+            },
             songCacheSize = songCacheSize,
             imageCacheSize = imageCacheSize,
             onClearSongCache = {
@@ -1105,30 +1902,9 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
         val activity = context.findActivity() as androidx.activity.ComponentActivity
         val viewModel: SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
 
-        val exportBackupLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.CreateDocument("application/json")
-        ) { uri ->
-            uri?.let {
-                viewModel.exportBackup(context, it) { _, msg ->
-                    (context as? MainActivity)?.showSnackbar(msg, 0)
-                }
-            }
-        }
-
-        val importBackupLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.OpenDocument()
-        ) { uri ->
-            uri?.let {
-                viewModel.importBackup(context, it) { _, msg ->
-                    (context as? MainActivity)?.showSnackbar(msg, 0)
-                }
-            }
-        }
-
         BackupRestoreScreen(
             navController = navController,
-            onBackupClick = { exportBackupLauncher.launch("spatialflow_backup.json") },
-            onRestoreClick = { importBackupLauncher.launch(arrayOf("application/json")) }
+            viewModel = viewModel
         )
     }
 
@@ -1145,7 +1921,9 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
         val ytCookies by viewModel.ytCookies.collectAsStateWithLifecycle()
         val dataSaver by viewModel.dataSaver.collectAsStateWithLifecycle()
         val pauseHistory by viewModel.pauseHistory.collectAsStateWithLifecycle()
-
+        val accountViewModel: com.codetrio.spatialflow.viewmodel.AccountViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
+        val spotifyViewModel: com.codetrio.spatialflow.viewmodel.SpotifyViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
+        val lastFmViewModel: com.codetrio.spatialflow.viewmodel.LastFmViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
 
         AccountScreen(
             navController = navController,
@@ -1154,7 +1932,43 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
             dataSaver = dataSaver,
             onDataSaverChange = { viewModel.setDataSaver(it) },
             pauseHistory = pauseHistory,
-            onPauseHistoryChange = { viewModel.setPauseHistory(it) }
+            onPauseHistoryChange = { viewModel.setPauseHistory(it) },
+            accountViewModel = accountViewModel,
+            spotifyViewModel = spotifyViewModel,
+            lastFmViewModel = lastFmViewModel
+        )
+    }
+
+    composableWithBlur(
+        route = SettingsRoute.LastFm.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        val context = LocalContext.current
+        val activity = context.findActivity() as androidx.activity.ComponentActivity
+        val lastFmViewModel: com.codetrio.spatialflow.viewmodel.LastFmViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
+        com.codetrio.spatialflow.ui.settings.LastFmSettingsScreen(
+            navController = navController,
+            viewModel = lastFmViewModel
+        )
+    }
+
+    composableWithBlur(
+        route = SettingsRoute.LastFmSignIn.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        val context = LocalContext.current
+        val activity = context.findActivity() as androidx.activity.ComponentActivity
+        val lastFmViewModel: com.codetrio.spatialflow.viewmodel.LastFmViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
+        com.codetrio.spatialflow.ui.lastfm.LastFmSignInScreen(
+            lastFmViewModel = lastFmViewModel,
+            onSignInSuccess = { navController.navigateUp() },
+            onNavigateUp = { navController.navigateUp() }
         )
     }
 
@@ -1171,13 +1985,20 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
         val darkMode by viewModel.darkMode.collectAsStateWithLifecycle()
         val amoledBlack by viewModel.amoledBlack.collectAsStateWithLifecycle()
         val showAnimatedArt by viewModel.showAnimatedArt.collectAsStateWithLifecycle()
+        val canvasProviderOrder by viewModel.canvasProviderOrder.collectAsStateWithLifecycle()
         val dynamicAlbumTheme by viewModel.dynamicAlbumTheme.collectAsStateWithLifecycle()
         val hideNavLabels by viewModel.hideNavLabels.collectAsStateWithLifecycle()
+        val slideNavOnScroll by viewModel.slideNavOnScroll.collectAsStateWithLifecycle()
         val dynamicNavStyle by viewModel.dynamicNavStyle.collectAsStateWithLifecycle()
         val navigationBlur by viewModel.navigationBlur.collectAsStateWithLifecycle()
         val tabSwitchBlur by viewModel.tabSwitchBlur.collectAsStateWithLifecycle()
         val playerTheme by viewModel.playerTheme.collectAsStateWithLifecycle()
+        val miniPlayerTheme by viewModel.miniPlayerTheme.collectAsStateWithLifecycle()
+        val navBarBlurOption by viewModel.navBarBlurOption.collectAsStateWithLifecycle()
+        val navStyle by viewModel.navStyle.collectAsStateWithLifecycle()
+        val allInOneLiquidGlass by viewModel.allInOneLiquidGlass.collectAsStateWithLifecycle()
         val forceHighRefreshRate by viewModel.forceHighRefreshRate.collectAsStateWithLifecycle()
+        val seekBarStyle by viewModel.seekBarStyle.collectAsStateWithLifecycle()
 
         AppearanceScreen(
             navController = navController,
@@ -1187,10 +2008,14 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
             onAmoledBlackChange = { viewModel.setAmoledBlack(it) },
             showAnimatedArt = showAnimatedArt,
             onShowAnimatedArtChange = { viewModel.setShowAnimatedArt(it) },
+            canvasProviderOrder = canvasProviderOrder,
+            onCanvasProviderOrderChange = { viewModel.setCanvasProviderOrder(it) },
             dynamicAlbumTheme = dynamicAlbumTheme,
             onDynamicAlbumThemeChange = { viewModel.setDynamicAlbumTheme(it) },
             hideNavLabels = hideNavLabels,
             onHideNavLabelsChange = { viewModel.setHideNavLabels(it) },
+            slideNavOnScroll = slideNavOnScroll,
+            onSlideNavOnScrollChange = { viewModel.setSlideNavOnScroll(it) },
             dynamicNavStyle = dynamicNavStyle,
             onDynamicNavStyleChange = { viewModel.setDynamicNavStyle(it) },
             navigationBlur = navigationBlur,
@@ -1199,6 +2024,17 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
             onTabSwitchBlurChange = { viewModel.setTabSwitchBlur(it) },
             playerTheme = playerTheme,
             onPlayerThemeChange = { viewModel.setPlayerTheme(it) },
+            miniPlayerTheme = miniPlayerTheme,
+            onMiniPlayerThemeChange = { viewModel.setMiniPlayerTheme(it) },
+            allInOneLiquidGlass = allInOneLiquidGlass,
+            onAllInOneLiquidGlassChange = { viewModel.setAllInOneLiquidGlass(it) },
+            onSolidStateSelect = { viewModel.setSolidState() },
+            navBarBlurOption = navBarBlurOption,
+            onNavBarBlurOptionChange = { viewModel.setNavBarBlurOption(it) },
+            navStyle = navStyle,
+            onNavStyleChange = { viewModel.setNavStyle(it) },
+            seekBarStyle = seekBarStyle,
+            onSeekBarStyleChange = { viewModel.setSeekBarStyle(it) },
             forceHighRefreshRate = forceHighRefreshRate,
             onForceHighRefreshRateChange = { viewModel.setForceHighRefreshRate(it) }
         )
@@ -1218,21 +2054,45 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
 
         val crossfadeEnabled by viewModel.crossfadeEnabled.collectAsStateWithLifecycle()
         val crossfadeDuration by viewModel.crossfadeDuration.collectAsStateWithLifecycle()
+        val crossfadeMode by viewModel.crossfadeMode.collectAsStateWithLifecycle()
+        val autoMixEnabled by viewModel.autoMixEnabled.collectAsStateWithLifecycle()
+        val autoMixPerformanceMode by viewModel.autoMixPerformanceMode.collectAsStateWithLifecycle()
         val audioFocus by viewModel.audioFocus.collectAsStateWithLifecycle()
         val autoplayEnabled by viewModel.autoplayEnabled.collectAsStateWithLifecycle()
         val sleepTimerEndTime by playerSharedViewModel.sleepTimerEndTime.collectAsStateWithLifecycle()
         val sleepTimerMode by playerSharedViewModel.sleepTimerMode.collectAsStateWithLifecycle()
         val audioQuality by viewModel.audioQuality.collectAsStateWithLifecycle()
+        val forceOpus by viewModel.forceOpus.collectAsStateWithLifecycle()
+        val losslessStreamPool by viewModel.losslessStreamPool.collectAsStateWithLifecycle()
+        val losslessPriorityOrder by viewModel.losslessPriorityOrder.collectAsStateWithLifecycle()
+        val disabledLosslessProviders by viewModel.disabledLosslessProviders.collectAsStateWithLifecycle()
+        val dacDirectMode by viewModel.dacDirectMode.collectAsStateWithLifecycle()
+        val dacBitPerfect by viewModel.dacBitPerfect.collectAsStateWithLifecycle()
+        val nativeSampleRate by viewModel.nativeSampleRate.collectAsStateWithLifecycle()
+        val dacFixedVolume by viewModel.dacFixedVolume.collectAsStateWithLifecycle()
+        val dacBannerEnabled by viewModel.dacBannerEnabled.collectAsStateWithLifecycle()
         val volumeNormalizationEnabled by viewModel.volumeNormalizationEnabled.collectAsStateWithLifecycle()
         val targetLufs by viewModel.targetLufs.collectAsStateWithLifecycle()
+        val disconnectAction by viewModel.disconnectAction.collectAsStateWithLifecycle()
+        val resumeOnConnect by viewModel.resumeOnConnect.collectAsStateWithLifecycle()
         PlaybackScreen(
             navController = navController,
             crossfadeEnabled = crossfadeEnabled,
             onCrossfadeToggle = { viewModel.setCrossfadeEnabled(it) },
             crossfadeDuration = crossfadeDuration,
             onCrossfadeDurationChange = { viewModel.setCrossfadeDuration(it) },
+            crossfadeMode = crossfadeMode,
+            onCrossfadeModeChange = { viewModel.setCrossfadeMode(it) },
+            autoMixEnabled = autoMixEnabled,
+            onAutoMixToggle = { viewModel.setAutoMixEnabled(it) },
+            autoMixPerformanceMode = autoMixPerformanceMode,
+            onAutoMixPerformanceModeChange = { viewModel.setAutoMixPerformanceMode(it) },
             audioFocus = audioFocus,
             onAudioFocusToggle = { viewModel.setAudioFocus(it) },
+            disconnectAction = disconnectAction,
+            onDisconnectActionChange = { viewModel.setDisconnectAction(it) },
+            resumeOnConnect = resumeOnConnect,
+            onResumeOnConnectChange = { viewModel.setResumeOnConnect(it) },
             autoplayEnabled = autoplayEnabled,
             onAutoplayToggle = { viewModel.setAutoplayEnabled(it) },
             sleepTimerEndTime = sleepTimerEndTime,
@@ -1245,6 +2105,25 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
             },
             audioQuality = audioQuality,
             onAudioQualityChange = { viewModel.setAudioQuality(it) },
+            forceOpus = forceOpus,
+            onForceOpusChange = { viewModel.setForceOpus(it) },
+            losslessStreamPool = losslessStreamPool,
+            onLosslessStreamPoolChange = { viewModel.setLosslessStreamPool(it) },
+            losslessPriorityOrder = losslessPriorityOrder,
+            disabledLosslessProviders = disabledLosslessProviders,
+            onLosslessPriorityOrderChange = { viewModel.setLosslessPriorityOrder(it) },
+            onToggleLosslessProvider = { provider, enabled -> viewModel.toggleLosslessProvider(provider, enabled) },
+            onResetLosslessPriorityOrder = { viewModel.resetLosslessPriorityOrder() },
+            dacDirectMode = dacDirectMode,
+            onDacDirectModeChange = { viewModel.setDacDirectMode(it) },
+            dacBitPerfect = dacBitPerfect,
+            onDacBitPerfectChange = { viewModel.setDacBitPerfect(it) },
+            nativeSampleRate = nativeSampleRate,
+            onNativeSampleRateChange = { viewModel.setNativeSampleRate(it) },
+            dacFixedVolume = dacFixedVolume,
+            onDacFixedVolumeChange = { viewModel.setDacFixedVolume(it) },
+            dacBannerEnabled = dacBannerEnabled,
+            onDacBannerChange = { viewModel.setDacBannerEnabled(it) },
             volumeNormalizationEnabled = volumeNormalizationEnabled,
             onVolumeNormalizationChange = { viewModel.setVolumeNormalizationEnabled(it) },
             targetLufs = targetLufs,
@@ -1262,22 +2141,40 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
         val context = LocalContext.current
         val activity = context.findActivity() as androidx.activity.ComponentActivity
         val viewModel: SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
+        val hapticsEnabled by viewModel.hapticsEnabled.collectAsStateWithLifecycle()
         val vibrationStrength by viewModel.vibrationStrength.collectAsStateWithLifecycle()
+        val hapticAudioMode by viewModel.hapticAudioMode.collectAsStateWithLifecycle()
+        val hapticPunchBoost by viewModel.hapticPunchBoost.collectAsStateWithLifecycle()
         val hapticPlayPause by viewModel.hapticPlayPause.collectAsStateWithLifecycle()
+        val hapticSliderTicks by viewModel.hapticSliderTicks.collectAsStateWithLifecycle()
         val hapticQueue by viewModel.hapticQueue.collectAsStateWithLifecycle()
         val hapticFavorite by viewModel.hapticFavorite.collectAsStateWithLifecycle()
+        val hapticPauseInBackground by viewModel.hapticPauseInBackground.collectAsStateWithLifecycle()
+        val hapticBatterySaver by viewModel.hapticBatterySaver.collectAsStateWithLifecycle()
 
         HapticsScreen(
             navController = navController,
             hasHaptics = viewModel.hasHaptics,
+            hapticsEnabled = hapticsEnabled,
+            onHapticsEnabledChange = { viewModel.setHapticsEnabled(it) },
             vibrationStrength = vibrationStrength,
             onVibrationStrengthChange = { viewModel.setVibrationStrength(it) },
+            hapticAudioMode = hapticAudioMode,
+            onHapticAudioModeChange = { viewModel.setHapticAudioMode(it) },
+            hapticPunchBoost = hapticPunchBoost,
+            onHapticPunchBoostChange = { viewModel.setHapticPunchBoost(it) },
             hapticPlayPause = hapticPlayPause,
             onHapticPlayPauseChange = { viewModel.setHapticPlayPause(it) },
+            hapticSliderTicks = hapticSliderTicks,
+            onHapticSliderTicksChange = { viewModel.setHapticSliderTicks(it) },
             hapticQueue = hapticQueue,
             onHapticQueueChange = { viewModel.setHapticQueue(it) },
             hapticFavorite = hapticFavorite,
-            onHapticFavoriteChange = { viewModel.setHapticFavorite(it) }
+            onHapticFavoriteChange = { viewModel.setHapticFavorite(it) },
+            hapticPauseInBackground = hapticPauseInBackground,
+            onHapticPauseInBackgroundChange = { viewModel.setHapticPauseInBackground(it) },
+            hapticBatterySaver = hapticBatterySaver,
+            onHapticBatterySaverChange = { viewModel.setHapticBatterySaver(it) }
         )
     }
 
@@ -1317,6 +2214,16 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
     }
 
     composableWithBlur(
+        route = SettingsRoute.DeveloperLogger.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        com.codetrio.spatialflow.ui.settings.DeveloperLoggerScreen(navController = navController)
+    }
+
+    composableWithBlur(
         route = SettingsRoute.WhatsNew.route,
         enterTransition = enterAnim,
         exitTransition = exitAnim,
@@ -1324,6 +2231,126 @@ fun NavGraphBuilder.settingsGraph(navController: androidx.navigation.NavControll
         popExitTransition = popExitAnim
     ) {
         WhatsNewScreen(navController = navController)
+    }
+
+    composableWithBlur(
+        route = SettingsRoute.Downloads.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        val context = LocalContext.current
+        val activity = context.findActivity() as androidx.activity.ComponentActivity
+        val viewModel: SettingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel(activity)
+
+        val wifiOnlyDownload by viewModel.wifiOnlyDownload.collectAsStateWithLifecycle()
+        val downloadAudioQuality by viewModel.downloadAudioQuality.collectAsStateWithLifecycle()
+        val downloadAudioFormat by viewModel.downloadAudioFormat.collectAsStateWithLifecycle()
+        val autoDownloadFavorites by viewModel.autoDownloadFavorites.collectAsStateWithLifecycle()
+        val offlineLyrics by viewModel.offlineLyrics.collectAsStateWithLifecycle()
+        val offlineOnlyMode by viewModel.offlineOnlyMode.collectAsStateWithLifecycle()
+        val downloadFolder by viewModel.downloadFolder.collectAsStateWithLifecycle()
+
+        val downloadFolderPickerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.OpenDocumentTree()
+        ) { uri ->
+            uri?.let {
+                context.contentResolver.takePersistableUriPermission(
+                    it, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+                val path = getPathFromUri(it)
+                viewModel.setDownloadFolder(path)
+            }
+        }
+
+        DownloadsScreen(
+            navController = navController,
+            wifiOnlyDownload = wifiOnlyDownload,
+            onWifiOnlyDownloadChange = { viewModel.setWifiOnlyDownload(it) },
+            downloadAudioQuality = downloadAudioQuality,
+            onDownloadAudioQualityChange = { viewModel.setDownloadAudioQuality(it) },
+            downloadAudioFormat = downloadAudioFormat,
+            onDownloadAudioFormatChange = { viewModel.setDownloadAudioFormat(it) },
+            autoDownloadFavorites = autoDownloadFavorites,
+            onAutoDownloadFavoritesChange = { viewModel.setAutoDownloadFavorites(it) },
+            offlineLyrics = offlineLyrics,
+            onOfflineLyricsChange = { viewModel.setOfflineLyrics(it) },
+            offlineOnlyMode = offlineOnlyMode,
+            onOfflineOnlyModeChange = { viewModel.setOfflineOnlyMode(it) },
+            downloadFolder = downloadFolder,
+            onDownloadFolderClick = { downloadFolderPickerLauncher.launch(null) }
+        )
+    }
+
+    composableWithBlur(
+        route = SettingsRoute.SourcePool.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        val context = LocalContext.current
+        val activity = context.findActivity() as androidx.activity.ComponentActivity
+        val viewModel: com.codetrio.spatialflow.ui.settings.sourcepool.SourcePoolViewModel =
+            androidx.lifecycle.viewmodel.compose.viewModel(activity)
+
+        com.codetrio.spatialflow.ui.settings.sourcepool.SourcePoolStatusScreen(
+            navController = navController,
+            viewModel = viewModel
+        )
+    }
+
+    composableWithBlur(
+        route = SettingsRoute.DeezerSettings.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        com.codetrio.spatialflow.ui.settings.deezer.DeezerSettingsScreen(
+            navController = navController,
+            onNavigateToSignIn = { navController.navigate(SettingsRoute.DeezerSignIn.route) }
+        )
+    }
+
+    composableWithBlur(
+        route = SettingsRoute.DeezerSignIn.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        com.codetrio.spatialflow.ui.settings.deezer.DeezerSignInScreen(
+            onSignInSuccess = { navController.navigateUp() },
+            onNavigateUp = { navController.navigateUp() }
+        )
+    }
+
+    composableWithBlur(
+        route = SettingsRoute.TidalSettings.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        com.codetrio.spatialflow.ui.settings.tidal.TidalSettingsScreen(
+            navController = navController,
+            onNavigateToSignIn = { navController.navigate(SettingsRoute.TidalSignIn.route) }
+        )
+    }
+
+    composableWithBlur(
+        route = SettingsRoute.TidalSignIn.route,
+        enterTransition = enterAnim,
+        exitTransition = exitAnim,
+        popEnterTransition = popEnterAnim,
+        popExitTransition = popExitAnim
+    ) {
+        com.codetrio.spatialflow.ui.settings.tidal.TidalSignInScreen(
+            onSignInSuccess = { navController.navigateUp() },
+            onNavigateUp = { navController.navigateUp() }
+        )
     }
 }
 
@@ -1353,14 +2380,23 @@ private fun SettingsDetailTopBar(title: String, onBack: () -> Unit) {
 sealed class SettingsRoute(val route: String) {
     object Main : SettingsRoute("settings")
     object MusicManagement : SettingsRoute("music_management")
+    object Downloads : SettingsRoute("downloads")
     object Account : SettingsRoute("account")
     object Appearance : SettingsRoute("appearance")
     object Playback : SettingsRoute("playback")
     object Haptics : SettingsRoute("haptics")
     object About : SettingsRoute("about")
     object Feedback : SettingsRoute("feedback")
+    object DeveloperLogger : SettingsRoute("developer_logger")
     object WhatsNew : SettingsRoute("whats_new")
     object BackupRestore : SettingsRoute("backup_restore")
+    object LastFm : SettingsRoute("lastfm_settings")
+    object LastFmSignIn : SettingsRoute("lastfm_signin")
+    object SourcePool : SettingsRoute("source_pool_status")
+    object DeezerSettings : SettingsRoute("deezer_settings")
+    object DeezerSignIn : SettingsRoute("deezer_signin")
+    object TidalSettings : SettingsRoute("tidal_settings")
+    object TidalSignIn : SettingsRoute("tidal_signin")
 }
 
 @Composable
@@ -1391,7 +2427,6 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface)
             .statusBarsPadding()
-            .then(if (isLandscape) Modifier.padding(start = 88.dp) else Modifier)
             .nestedScroll(nestedScrollConnection)
             .verticalScroll(scrollState)
             .padding(horizontal = 24.dp)
@@ -1403,16 +2438,75 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = 16.dp, bottom = 24.dp)
+                .padding(top = 16.dp, bottom = 16.dp)
         )
 
+        val prefs = remember(context) {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }
+        val isSupporter by prefs.observeKey(KEY_IS_SUPPORTER, false)
+        var showSupportBottomSheet by remember { mutableStateOf(false) }
+
+        SupporterBannerCard(
+            isSupporter = isSupporter,
+            onOpenSupportSheet = {
+                showSupportBottomSheet = true
+            }
+        )
+
+        if (showSupportBottomSheet) {
+            com.codetrio.spatialflow.ui.settings.SupportBottomSheet(
+                isSupporter = isSupporter,
+                onDismissRequest = { showSupportBottomSheet = false },
+                onOpenSupportSite = {
+                    try {
+                        prefs.edit()
+                            .putBoolean(KEY_AWAITING_SUPPORTER_REWARD, true)
+                            .putLong(KEY_SUPPORTER_REWARD_LAUNCH_TIME, System.currentTimeMillis())
+                            .apply()
+                        val intent = Intent(Intent.ACTION_VIEW, "https://supportspatialflow.vercel.app/".toUri())
+                        context.startActivity(intent)
+                    } catch (_: Exception) {
+                        android.widget.Toast.makeText(context, "Could not open browser", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+        val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
+        val secondaryContainer = MaterialTheme.colorScheme.secondaryContainer
+        val onSecondaryContainer = MaterialTheme.colorScheme.onSecondaryContainer
+        val tertiaryContainer = MaterialTheme.colorScheme.tertiaryContainer
+        val onTertiaryContainer = MaterialTheme.colorScheme.onTertiaryContainer
+
+        val primaryPastel = primaryContainer.copy(alpha = 0.12f)
+        val secondaryPastel = secondaryContainer.copy(alpha = 0.12f)
+        val tertiaryPastel = tertiaryContainer.copy(alpha = 0.12f)
+
         SettingsGroupCard(
+            containerColors = listOf(
+                primaryPastel,
+                secondaryPastel,
+                tertiaryPastel,
+                primaryPastel,
+                secondaryPastel,
+                tertiaryPastel,
+                primaryPastel,
+                secondaryPastel,
+                tertiaryPastel,
+                primaryPastel
+            ),
             items = listOf(
                 {
                     SettingsCategoryItem(
                         title = "Account & Sync",
                         subtitle = "YouTube Music login, history sync",
                         icon = Icons.Rounded.AccountCircle,
+                        iconContainerColor = primaryContainer,
+                        iconContentColor = onPrimaryContainer,
                         onClick = { navController.navigate(SettingsRoute.Account.route) }
                     )
                 },
@@ -1421,6 +2515,8 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
                         title = "Playback",
                         subtitle = "Audio behavior, crossfade, audio focus",
                         icon = Icons.Rounded.PlayCircle,
+                        iconContainerColor = secondaryContainer,
+                        iconContentColor = onSecondaryContainer,
                         onClick = { navController.navigate(SettingsRoute.Playback.route) }
                     )
                 },
@@ -1429,7 +2525,19 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
                         title = "Music Management",
                         subtitle = "Manage folders, refresh library, storage",
                         icon = Icons.Rounded.LibraryMusic,
+                        iconContainerColor = tertiaryContainer,
+                        iconContentColor = onTertiaryContainer,
                         onClick = { navController.navigate(SettingsRoute.MusicManagement.route) }
+                    )
+                },
+                {
+                    SettingsCategoryItem(
+                        title = "Downloads",
+                        subtitle = "Download manager, storage, offline mode & audio format",
+                        icon = Icons.Rounded.Download,
+                        iconContainerColor = primaryContainer,
+                        iconContentColor = onPrimaryContainer,
+                        onClick = { navController.navigate(SettingsRoute.Downloads.route) }
                     )
                 },
                 {
@@ -1437,6 +2545,8 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
                         title = "Appearance",
                         subtitle = "Themes, layout, visual styles",
                         icon = Icons.Rounded.Palette,
+                        iconContainerColor = secondaryContainer,
+                        iconContentColor = onSecondaryContainer,
                         onClick = { navController.navigate(SettingsRoute.Appearance.route) }
                     )
                 },
@@ -1445,6 +2555,8 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
                         title = "Haptics",
                         subtitle = "Vibration strength, haptic feedback",
                         icon = Icons.Rounded.Vibration,
+                        iconContainerColor = tertiaryContainer,
+                        iconContentColor = onTertiaryContainer,
                         onClick = { navController.navigate(SettingsRoute.Haptics.route) }
                     )
                 },
@@ -1453,6 +2565,8 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
                         title = "Backup & Restore",
                         subtitle = "Export and import your library and settings",
                         icon = Icons.Rounded.SettingsBackupRestore,
+                        iconContainerColor = primaryContainer,
+                        iconContentColor = onPrimaryContainer,
                         onClick = { navController.navigate(SettingsRoute.BackupRestore.route) }
                     )
                 },
@@ -1461,6 +2575,8 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
                         title = "Feedback & Bug Reports",
                         subtitle = "Report issues, request features, export logs",
                         icon = Icons.Rounded.BugReport,
+                        iconContainerColor = secondaryContainer,
+                        iconContentColor = onSecondaryContainer,
                         onClick = { navController.navigate(SettingsRoute.Feedback.route) }
                     )
                 },
@@ -1469,6 +2585,8 @@ private fun SettingsMainScreen(navController: androidx.navigation.NavController)
                         title = "About",
                         subtitle = "App version, credits, updates",
                         icon = Icons.Rounded.Info,
+                        iconContainerColor = tertiaryContainer,
+                        iconContentColor = onTertiaryContainer,
                         onClick = { navController.navigate(SettingsRoute.About.route) }
                     )
                 }
@@ -1484,27 +2602,31 @@ private fun SettingsCategoryItem(
     title: String,
     subtitle: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
+    headlineColor: Color = MaterialTheme.colorScheme.onSurface,
+    supportingColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    iconContainerColor: Color = MaterialTheme.colorScheme.primary,
+    iconContentColor: Color = MaterialTheme.colorScheme.onPrimary,
     onClick: () -> Unit
 ) {
     ListItem(
         headlineContent = {
-            Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, color = headlineColor)
         },
         supportingContent = {
-            Text(text = subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(text = subtitle, style = MaterialTheme.typography.bodyMedium, color = supportingColor)
         },
         leadingContent = {
             Box(
                 modifier = Modifier
                     .size(48.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
+                    .background(iconContainerColor),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon, 
                     contentDescription = null, 
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    tint = iconContentColor,
                     modifier = Modifier.size(28.dp)
                 )
             }
@@ -1515,674 +2637,218 @@ private fun SettingsCategoryItem(
 }
 
 @Composable
-private fun MusicManagementScreen(
-    navController: androidx.navigation.NavController,
-    libraryPaths: List<String>,
-    onRemovePath: (String) -> Unit,
-    onAddPathClick: () -> Unit,
-    songCacheSize: String,
-    imageCacheSize: String,
-    onClearSongCache: () -> Unit,
-    onClearImageCache: () -> Unit,
-    ignoreShortAudio: Boolean,
-    onIgnoreShortAudioChange: (Boolean) -> Unit,
-    ignoreShortAudioDuration: Float,
-    onIgnoreShortAudioDurationChange: (Float) -> Unit,
-    songCacheMaxSize: Int,
-    onSongCacheMaxSizeChange: (Int) -> Unit,
-    imageCacheMaxSize: Int,
-    onImageCacheMaxSizeChange: (Int) -> Unit,
-    downloadFolder: String?,
-    onDownloadFolderClick: () -> Unit,
-    hiddenFolders: List<String>,
-    onAddHiddenFolderClick: () -> Unit,
-    onRemoveHiddenFolder: (String) -> Unit,
-    isScanning: Boolean,
-    onRescanClick: () -> Unit,
-    onRebuildDatabaseClick: () -> Unit
+private fun SupporterBannerCard(
+    isSupporter: Boolean,
+    onOpenSupportSheet: () -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        Scaffold(
-            topBar = { SettingsDetailTopBar("Music Management") { navController.popBackStack() } }
-        ) { paddingValues ->
+    val haptic = LocalHapticFeedback.current
+
+    if (isSupporter) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = SpatialShapes.Large,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            ),
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onOpenSupportSheet()
+            }
+        ) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp)
-                    .padding(bottom = 120.dp)
+                    .fillMaxWidth()
+                    .padding(20.dp)
             ) {
-                SettingsHeader(stringResource(R.string.settings_header_library))
-                SettingsGroupCard(buildList {
-                    add { LibrarySourceHeader() }
-                    libraryPaths.forEach { path ->
-                        add { LibraryPathRow(path, onRemovePath) }
-                    }
-                    if (libraryPaths.isEmpty()) {
-                        add { LibraryPathRow(stringResource(R.string.setting_music_source_default), null) }
-                    }
-                    add { AddMorePathRow(onAddPathClick) }
-                })
-
-                SettingsHeader("Audio Filtering")
-                SettingsGroupCard(buildList {
-                    add {
-                        IgnoreShortAudioRow(ignoreShortAudio, onIgnoreShortAudioChange)
-                    }
-                    if (ignoreShortAudio) {
-                        add {
-                            IgnoreShortAudioDurationRow(ignoreShortAudioDuration, onIgnoreShortAudioDurationChange)
-                        }
-                    }
-                })
-
-                SettingsHeader("Hidden Folders")
-                SettingsGroupCard(buildList {
-                    hiddenFolders.forEach { folder ->
-                        add { HiddenFolderRow(folder, onRemoveHiddenFolder) }
-                    }
-                    if (hiddenFolders.isEmpty()) {
-                        add {
-                            ListItem(
-                                headlineContent = { Text("No folders blacklisted", style = MaterialTheme.typography.bodyLarge) },
-                                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = SpatialShapes.Medium,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                            Icon(
+                                imageVector = Icons.Rounded.Verified,
+                                contentDescription = "Supporter",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(26.dp)
                             )
                         }
                     }
-                    add {
-                        AddHiddenFolderRow(onAddHiddenFolderClick)
-                    }
-                })
 
-                SettingsHeader("Downloads")
-                SettingsGroupCard(listOf(
-                    { DownloadFolderRow(downloadFolder, onDownloadFolderClick) }
-                ))
+                    Spacer(modifier = Modifier.width(16.dp))
 
-                SettingsHeader(stringResource(R.string.settings_header_storage))
-                SettingsGroupCard(buildList {
-                    add { SongCacheSizeRow(songCacheSize, songCacheMaxSize, onSongCacheMaxSizeChange, onClearSongCache) }
-                    add { ImageCacheSizeRow(imageCacheSize, imageCacheMaxSize, onImageCacheMaxSizeChange, onClearImageCache) }
-                })
-
-                SettingsHeader("Database & Scanning")
-                SettingsGroupCard(buildList {
-                    add {
-                        ListItem(
-                            onClick = onRescanClick,
-                            content = {
-                                Column {
-                                    Text("Full Library Rescan", style = MaterialTheme.typography.bodyLarge)
-                                    Text("Scan local storage for new music files", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "SpatialFlow Supporter",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Surface(
+                                shape = SpatialShapes.Pill,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.Check,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        text = "ACTIVE",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            letterSpacing = 0.5.sp
+                                        )
+                                    )
                                 }
-                            },
-                            leadingContent = {
-                                Icon(androidx.compose.material.icons.Icons.Default.Refresh, null, tint = MaterialTheme.colorScheme.primary)
-                            },
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Thank you for supporting SpatialFlow! Your supporter badge is active.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    add {
-                        ListItem(
-                            onClick = onRebuildDatabaseClick,
-                            content = {
-                                Column {
-                                    Text("Rebuild Database", style = MaterialTheme.typography.bodyLarge)
-                                    Text("Clear media & image caches, then full re-index", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                                }
-                            },
-                            leadingContent = {
-                                Icon(androidx.compose.material.icons.Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error)
-                            },
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                        )
-                    }
-                })
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                FilledTonalButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onOpenSupportSheet()
+                    },
+                    shape = SpatialShapes.MediumLarge,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    ),
+                    contentPadding = PaddingValues(vertical = 12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Favorite,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Support Again",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
-
-        if (isScanning) {
-            Box(
+    } else {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = SpatialShapes.Large,
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer
+            ),
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onOpenSupportSheet()
+            }
+        ) {
+            Column(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable(enabled = false) {},
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .padding(20.dp)
             ) {
-                Card(
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-                    modifier = Modifier.padding(32.dp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                    Surface(
+                        shape = SpatialShapes.Medium,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(48.dp)
                     ) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                            Icon(
+                                imageVector = Icons.Rounded.Favorite,
+                                contentDescription = "Support",
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(16.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Scanning & syncing library...",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.SemiBold,
+                            text = "Support SpatialFlow",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun BackupRestoreScreen(
-    navController: androidx.navigation.NavController,
-    onBackupClick: () -> Unit,
-    onRestoreClick: () -> Unit
-) {
-    Scaffold(
-        topBar = { SettingsDetailTopBar("Backup & Restore") { navController.popBackStack() } }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 120.dp)
-        ) {
-            SettingsHeader("Backup & Restore")
-            SettingsGroupCard(buildList {
-                add {
-                    ListItem(
-                        onClick = onBackupClick,
-                        content = {
-                            Column {
-                                Text("Export Settings & Library", style = MaterialTheme.typography.bodyLarge)
-                                Text("Export playlists, favorites, and preferences to JSON", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        },
-                        leadingContent = {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_download),
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                    )
-                }
-                add {
-                    ListItem(
-                        onClick = onRestoreClick,
-                        content = {
-                            Column {
-                                Text("Import Settings & Library", style = MaterialTheme.typography.bodyLarge)
-                                Text("Restore playlists, favorites, and preferences from JSON", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        },
-                        leadingContent = {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_download),
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(24.dp).graphicsLayer { rotationZ = 180f }
-                            )
-                        },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                    )
-                }
-            })
-        }
-    }
-}
-
-@Composable
-private fun IgnoreShortAudioRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
-    ListItem(
-        onClick = { onToggle(!checked) },
-        content = {
-            Column {
-                Text(
-                    text = "Ignore Short Audio (Voice Notes)",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Hide voice notes and short recordings from library",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onToggle
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun IgnoreShortAudioDurationRow(
-    value: Float, onValueChange: (Float) -> Unit
-) {
-    ListItem(
-        onClick = { },
-        content = {
-            Column {
-                Text(
-                    text = "Minimum Duration Threshold",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Ignore tracks under ${value.toInt()} seconds",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        supportingContent = {
-            Slider(
-                value = value.coerceIn(10f, 120f),
-                onValueChange = onValueChange,
-                valueRange = 10f..120f,
-                steps = 10,
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun HiddenFolderRow(path: String, onRemove: (String) -> Unit) {
-    ListItem(
-        onClick = { },
-        content = {
-            Text(
-                text = path.substringAfterLast("/"),
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        },
-        supportingContent = {
-            Text(
-                text = path,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        },
-        leadingContent = {
-            Icon(
-                painter = painterResource(R.drawable.ic_folder_open),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
-        },
-        trailingContent = {
-            Text(
-                text = "Remove",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.error,
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .clickable { onRemove(path) }
-                    .padding(8.dp)
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun AddHiddenFolderRow(onClick: () -> Unit) {
-    ListItem(
-        onClick = onClick,
-        content = {
-            Text(
-                text = "Add Hidden Folder",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.primary
-            )
-        },
-        leadingContent = {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun AccountScreen(
-    navController: androidx.navigation.NavController,
-    ytCookies: String?,
-    onYtCookiesChange: (String?) -> Unit,
-    dataSaver: Boolean,
-    onDataSaverChange: (Boolean) -> Unit,
-    pauseHistory: Boolean,
-    onPauseHistoryChange: (Boolean) -> Unit
-) {
-    Scaffold(
-        topBar = { SettingsDetailTopBar("Account & Sync") { navController.popBackStack() } }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 120.dp)
-        ) {
-            SettingsHeader("YouTube Music Account")
-            SettingsGroupCard(listOf(
-                {
-                    var showLoginDialog by remember { mutableStateOf(false) }
-
-                    if (showLoginDialog) {
-                        YouTubeMusicLoginDialog(
-                            onDismissRequest = { showLoginDialog = false },
-                            onLoginSuccess = { cookies ->
-                                onYtCookiesChange(cookies)
-                                showLoginDialog = false
-                            }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = if (ytCookies != null) "Logged in to YouTube Music" else "Guest Mode (Anonymous)",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            if (ytCookies != null) {
-                                Text(
-                                    text = "Profile: SpatialFlow User",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Text(
-                                text = if (ytCookies != null) "Accessing personalized playlists, library, and recommended interests." else "No account linked. Tap to sign in securely.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        Button(
-                            onClick = {
-                                if (ytCookies != null) {
-                                    onYtCookiesChange(null)
-                                } else {
-                                    showLoginDialog = true
-                                }
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (ytCookies != null) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
-                                contentColor = if (ytCookies != null) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        ) {
-                            Text(if (ytCookies != null) "Log Out" else "Log In")
-                        }
-                    }
-                }
-            ))
-
-            SettingsHeader("Data Saving")
-            SettingsGroupCard(listOf(
-                { DataSaverRow(dataSaver, onDataSaverChange) }
-            ))
-
-            SettingsHeader("Sync & Privacy")
-            SettingsGroupCard(listOf(
-                { PauseHistoryRow(pauseHistory, onPauseHistoryChange) },
-                { ManualSyncRow() }
-            ))
-        }
-    }
-}
-
-
-@Composable
-private fun DataSaverRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
-    ListItem(
-        onClick = { onToggle(!checked) },
-        content = {
-            Column {
-                Text(
-                    text = "Data Saver (Wi-Fi Only)",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Restrict streaming and high-res cover art downloads to Wi-Fi only",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onToggle
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun PauseHistoryRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
-    ListItem(
-        onClick = { onToggle(!checked) },
-        content = {
-            Column {
-                Text(
-                    text = "Pause Listening History",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Stop tracking played songs for recommendations",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onToggle
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun ManualSyncRow() {
-    var isSyncing by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-
-    ListItem(
-        onClick = {
-            if (!isSyncing) {
-                isSyncing = true
-                scope.launch {
-                    delay(2000) // Simulate sync
-                    isSyncing = false
-                }
-            }
-        },
-        content = {
-            Column {
-                Text(text = "Manual Sync", style = MaterialTheme.typography.bodyLarge)
-                Text(text = "Sync playlists and favorites with server", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        },
-        trailingContent = {
-            if (isSyncing) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(24.dp),
-                    strokeWidth = 2.dp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = "Sync Now",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun AppearanceScreen(
-    navController: androidx.navigation.NavController,
-    darkMode: Boolean,
-    onDarkModeChange: (Boolean) -> Unit,
-    amoledBlack: Boolean,
-    onAmoledBlackChange: (Boolean) -> Unit,
-    showAnimatedArt: Boolean,
-    onShowAnimatedArtChange: (Boolean) -> Unit,
-    dynamicAlbumTheme: Boolean,
-    onDynamicAlbumThemeChange: (Boolean) -> Unit,
-    hideNavLabels: Boolean,
-    onHideNavLabelsChange: (Boolean) -> Unit,
-    dynamicNavStyle: Boolean,
-    onDynamicNavStyleChange: (Boolean) -> Unit,
-    navigationBlur: Boolean,
-    onNavigationBlurChange: (Boolean) -> Unit,
-    tabSwitchBlur: Boolean,
-    onTabSwitchBlurChange: (Boolean) -> Unit,
-    playerTheme: String,
-    onPlayerThemeChange: (String) -> Unit,
-    forceHighRefreshRate: Boolean,
-    onForceHighRefreshRateChange: (Boolean) -> Unit
-) {
-    Scaffold(
-        topBar = { SettingsDetailTopBar("Appearance") { navController.popBackStack() } }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 120.dp)
-        ) {
-            SettingsHeader(stringResource(R.string.settings_header_general))
-            SettingsGroupCard(buildList {
-                add { ThemeRow(darkMode, onDarkModeChange) }
-                if (darkMode) {
-                    add { AmoledBlackRow(amoledBlack, onAmoledBlackChange) }
-                }
-                add { HighRefreshRateRow(forceHighRefreshRate, onForceHighRefreshRateChange) }
-            })
-
-            SettingsHeader("Visual Effects")
-            SettingsGroupCard(buildList {
-                add {
-                    ListItem(
-                        headlineContent = { Text("Animated Album Art", style = MaterialTheme.typography.bodyLarge) },
-                        supportingContent = { Text("Show looping video canvas on player screen if available", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        trailingContent = { Switch(checked = showAnimatedArt, onCheckedChange = onShowAnimatedArtChange) },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        modifier = Modifier.clickable { onShowAnimatedArtChange(!showAnimatedArt) }
-                    )
-                }
-                add {
-                    var showThemeSheet by remember { mutableStateOf(false) }
-                    val themeText = when (playerTheme) {
-                        "fluid" -> "Fluid Animation (Apple Fluid)"
-                        "static" -> "Static Album Colors"
-                        else -> "Fluid Animation (Apple Fluid)"
-                    }
-                    ListItem(
-                        onClick = { showThemeSheet = true },
-                        content = {
-                            Column {
-                                Text(
-                                    text = "Player Theme",
-                                    style = MaterialTheme.typography.bodyLarge
-                                )
-                                Text(
-                                    text = themeText,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        },
-                        leadingContent = {
-                            Icon(
-                                imageVector = Icons.Rounded.Palette,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        },
-                        trailingContent = {
-                            Icon(
-                                imageVector = Icons.Default.ChevronRight,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                    )
-                    if (showThemeSheet) {
-                        val ctx = androidx.compose.ui.platform.LocalContext.current
-                        val bgMode = ctx.getSharedPreferences("AppSettings", android.content.Context.MODE_PRIVATE)
-                            .getString("now_playing_background", "Blurred") ?: "Blurred"
-                        com.codetrio.spatialflow.ui.player.PlayerThemeBottomSheet(
-                            onDismissRequest = { showThemeSheet = false },
-                            currentTheme = playerTheme,
-                            onThemeSelect = { selectedTheme ->
-                                onPlayerThemeChange(selectedTheme)
-                            }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Star on GitHub, watch an offer, or direct tip via UPI.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-                add { DynamicAlbumThemeRow(dynamicAlbumTheme, onDynamicAlbumThemeChange) }
-                add { NavigationBlurRow(navigationBlur, onNavigationBlurChange) }
-                // Only show tab-blur toggle when blur is enabled globally
-                if (navigationBlur) {
-                    add { TabSwitchBlurRow(tabSwitchBlur, onTabSwitchBlurChange) }
-                }
-            })
 
-            SettingsHeader("Navigation Bar")
-            SettingsGroupCard(buildList {
-                add { HideNavLabelsRow(hideNavLabels, onHideNavLabelsChange) }
-                add { DynamicNavStyleRow(dynamicNavStyle, onDynamicNavStyleChange) }
-            })
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onOpenSupportSheet()
+                    },
+                    shape = SpatialShapes.MediumLarge,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary
+                    ),
+                    contentPadding = PaddingValues(vertical = 12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Favorite,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Support SpatialFlow",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
         }
     }
 }
+
+
+
+
+
+
 
 @Composable
 private fun NavigationBlurRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
@@ -2281,806 +2947,15 @@ private fun DynamicNavStyleRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
     )
 }
 
-@Composable
-private fun HideNavLabelsRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
-    ListItem(
-        onClick = { onToggle(!checked) },
-        content = {
-            Column {
-                Text(
-                    text = "Hide Navigation Labels",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Remove text labels from the bottom navigation bar",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onToggle
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun DynamicAlbumThemeRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
-    ListItem(
-        onClick = { onToggle(!checked) },
-        content = {
-            Column {
-                Text(
-                    text = "Dynamic colors",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Extract theme colors from the currently playing album art",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        leadingContent = {
-            Icon(
-                imageVector = Icons.Rounded.Palette,
-                contentDescription = null,
-                tint = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onToggle
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun AmoledBlackRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
-    ListItem(
-        onClick = { onToggle(!checked) },
-        content = {
-            Column {
-                Text(
-                    text = "Pure AMOLED Black",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Pitch black background in dark mode to save battery",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onToggle
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun HighRefreshRateRow(checked: Boolean, onToggle: (Boolean) -> Unit) {
-    val supportedHighestFps = com.codetrio.spatialflow.util.rememberSupportedHighestFps()
-    val isHighRefreshRateSupported = supportedHighestFps > 60.5f
-
-    ListItem(
-        onClick = { if (isHighRefreshRateSupported) onToggle(!checked) },
-        content = {
-            Column {
-                Text(
-                    text = "Force high refresh rate",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = if (isHighRefreshRateSupported) "Max supported: ${supportedHighestFps.roundToInt()} Hz" else "Not supported on this device",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onToggle,
-                enabled = isHighRefreshRateSupported
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun PlaybackScreen(
-    navController: androidx.navigation.NavController,
-    crossfadeEnabled: Boolean,
-    onCrossfadeToggle: (Boolean) -> Unit,
-    crossfadeDuration: Float,
-    onCrossfadeDurationChange: (Float) -> Unit,
-    audioFocus: Boolean,
-    onAudioFocusToggle: (Boolean) -> Unit,
-    autoplayEnabled: Boolean,
-    onAutoplayToggle: (Boolean) -> Unit,
-    sleepTimerEndTime: Long,
-    sleepTimerMode: PlayerSharedViewModel.SleepTimerMode,
-    onStartSleepTimer: (Int) -> Unit,
-    onCancelSleepTimer: () -> Unit,
-    onSetEndOfSong: (Boolean) -> Unit,
-    audioQuality: String,
-    onAudioQualityChange: (String) -> Unit,
-    volumeNormalizationEnabled: Boolean,
-    onVolumeNormalizationChange: (Boolean) -> Unit,
-    targetLufs: Float,
-    onTargetLufsChange: (Float) -> Unit
-) {
-    Scaffold(
-        topBar = { SettingsDetailTopBar("Playback") { navController.popBackStack() } }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 120.dp)
-        ) {
-            SettingsHeader("Crossfade")
-            SettingsGroupCard(listOf(
-                { CrossfadeRow(crossfadeEnabled, onCrossfadeToggle, crossfadeDuration, onCrossfadeDurationChange) }
-            ))
-
-            SettingsHeader("Streaming Quality")
-            SettingsGroupCard(listOf(
-                { AudioQualityRow(audioQuality, onAudioQualityChange) }
-            ))
-            
-            SettingsHeader("Audio Focus")
-            SettingsGroupCard(listOf(
-                { AudioFocusRow(audioFocus, onAudioFocusToggle) }
-            ))
-
-            SettingsHeader("Queue & Autoplay")
-            SettingsGroupCard(listOf(
-                { AutoplayRow(autoplayEnabled, onAutoplayToggle) }
-            ))
-
-            SettingsHeader("Volume Controls")
-            SettingsGroupCard(listOf(
-                { VolumeNormalizationRow(volumeNormalizationEnabled, onVolumeNormalizationChange, targetLufs, onTargetLufsChange) }
-            ))
-
-            SettingsHeader("Sleep Timer")
-            SettingsGroupCard(listOf(
-                { SleepTimerSection(sleepTimerEndTime, sleepTimerMode, onStartSleepTimer, onCancelSleepTimer, onSetEndOfSong) }
-            ))
-        }
-    }
-}
 
 
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun AudioQualityRow(
-    currentQuality: String,
-    onQualityChange: (String) -> Unit
-) {
-    val options = listOf("High", "Normal", "Data Saver")
-    
-    ListItem(
-        headlineContent = {
-            Column {
-                Text(
-                    text = "Streaming Quality",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "High uses more data, Data Saver uses lowest bitrate",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                Spacer(modifier = Modifier.height(12.dp))
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    options.forEach { option ->
-                        val isSelected = option == currentQuality
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                            contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                            onClick = { onQualityChange(option) }
-                        ) {
-                            Text(
-                                text = option,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                style = MaterialTheme.typography.labelLarge
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun VolumeNormalizationRow(
-    enabled: Boolean,
-    onToggle: (Boolean) -> Unit,
-    targetLufs: Float,
-    onTargetLufsChange: (Float) -> Unit
-) {
-    val options = listOf(
-        Pair("Quiet", -19f),
-        Pair("Normal", -14f),
-        Pair("Loud", -11f)
-    )
 
-    Column {
-        ListItem(
-            headlineContent = {
-                Text("Volume Normalization", style = MaterialTheme.typography.bodyLarge)
-            },
-            supportingContent = {
-                Text(
-                    "Automatically adjust playback volume so all songs sound equally loud.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            },
-            trailingContent = {
-                Switch(
-                    checked = enabled,
-                    onCheckedChange = onToggle
-                )
-            },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-        )
-
-        AnimatedVisibility(visible = enabled) {
-            ListItem(
-                headlineContent = {
-                    Column {
-                        Text(
-                            text = "Target Loudness",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            options.forEach { option ->
-                                val isSelected = option.second == targetLufs
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                                    contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    onClick = { onTargetLufsChange(option.second) }
-                                ) {
-                                    Text(
-                                        text = option.first,
-                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                        style = MaterialTheme.typography.labelLarge
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-            )
-        }
-    }
-}
-
-@Composable
-private fun HapticsScreen(
-    navController: androidx.navigation.NavController,
-    hasHaptics: Boolean,
-    vibrationStrength: Float,
-    onVibrationStrengthChange: (Float) -> Unit,
-    hapticPlayPause: Boolean,
-    onHapticPlayPauseChange: (Boolean) -> Unit,
-    hapticQueue: Boolean,
-    onHapticQueueChange: (Boolean) -> Unit,
-    hapticFavorite: Boolean,
-    onHapticFavoriteChange: (Boolean) -> Unit
-) {
-    Scaffold(
-        topBar = { SettingsDetailTopBar("Haptics") { navController.popBackStack() } }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 120.dp)
-        ) {
-            SettingsHeader(stringResource(R.string.settings_haptics_title))
-            SettingsGroupCard(buildList {
-                if (!hasHaptics) {
-                    add { HapticsNotSupported() }
-                }
-                add { VibrationStrengthRow(vibrationStrength, onVibrationStrengthChange, hasHaptics) }
-            })
-
-            SettingsHeader("Granular Interactions")
-            SettingsGroupCard(buildList {
-                add { HapticToggleRow("Haptics on Play/Pause", "Vibrate when playing or pausing audio", hapticPlayPause, onHapticPlayPauseChange, hasHaptics) }
-                add { HapticToggleRow("Haptics on Queue Reordering", "Vibrate when dragging items in the queue", hapticQueue, onHapticQueueChange, hasHaptics) }
-                add { HapticToggleRow("Haptics on Heart/Favorite", "Vibrate when liking a song", hapticFavorite, onHapticFavoriteChange, hasHaptics) }
-            })
-        }
-    }
-}
-
-@Composable
-private fun HapticToggleRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onToggle: (Boolean) -> Unit,
-    enabled: Boolean
-) {
-    val alpha by animateFloatAsState(
-        targetValue = if (enabled) 1f else 0.38f,
-        animationSpec = SmoothSpring,
-        label = "haptic_row_alpha"
-    )
-
-    ListItem(
-        onClick = { if (enabled) onToggle(!checked) },
-        content = {
-            Column(modifier = Modifier.graphicsLayer { this.alpha = alpha }) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        trailingContent = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onToggle,
-                enabled = enabled
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-// ── Whats New ───────────────────────────────────────────────────────────────
-
-@Composable
-private fun WhatsNewScreen(navController: androidx.navigation.NavController) {
-    val releases by androidx.compose.runtime.produceState<List<com.codetrio.spatialflow.update.GitHubReleaseClient.ReleaseInfo>?>(initialValue = null) {
-        withContext(Dispatchers.IO) {
-            val client = com.codetrio.spatialflow.update.GitHubReleaseClient("MythicalSHUB", "SpatialFlow")
-            value = client.getAllReleases()
-        }
-    }
-
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
-
-    Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
-        topBar = {
-            androidx.compose.material3.LargeTopAppBar(
-                title = { Text("What's New") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                scrollBehavior = scrollBehavior,
-                colors = TopAppBarDefaults.largeTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
-                    titleContentColor = MaterialTheme.colorScheme.primary
-                )
-            )
-        }
-    ) { paddingValues ->
-        if (releases == null) {
-            Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator()
-            }
-        } else if (releases!!.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize().padding(paddingValues), contentAlignment = Alignment.Center) {
-                Text("No releases found.", style = MaterialTheme.typography.bodyLarge)
-            }
-        } else {
-            androidx.compose.foundation.lazy.LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .padding(horizontal = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-                contentPadding = PaddingValues(top = 24.dp, bottom = 120.dp)
-            ) {
-                val groupedReleases = releases!!.groupBy { release ->
-                    release.tagName.removePrefix("v").removePrefix("V").substringBefore('.')
-                }
-
-                groupedReleases.forEach { (majorVersion, majorReleases) ->
-                    item(key = "header_$majorVersion") {
-                        Text(
-                            text = "Version $majorVersion Series",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
-                        )
-                    }
-
-                    itemsIndexed(majorReleases, key = { _, rel -> rel.tagName }) { _, release ->
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)
-                        ) {
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = getSettingsSegmentedShape(index = 0, count = 2),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh
-                            ) {
-                                ListItem(
-                                    headlineContent = {
-                                        Text(
-                                            text = release.tagName,
-                                            style = MaterialTheme.typography.titleLarge,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    },
-                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                                )
-                            }
-
-                            Surface(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = getSettingsSegmentedShape(index = 1, count = 2),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    val rawChangelog = release.changelog ?: ""
-                                    val lines = rawChangelog.split("\n")
-                                    
-                                    lines.forEach { line ->
-                                        val trimmed = line.trim()
-                                        if (trimmed.isEmpty()) return@forEach
-                                        
-                                        // Try to parse line as an Image or GIF
-                                        val imgUrl = when {
-                                            trimmed.startsWith("![") -> {
-                                                Regex("!\\s*\\[.*?\\]\\s*\\((.*?)\\)").find(trimmed)?.groupValues?.getOrNull(1)
-                                            }
-                                            trimmed.startsWith("<img", ignoreCase = true) -> {
-                                                Regex("<img.*?src=[\"'](.*?)[\"'].*?>", RegexOption.IGNORE_CASE).find(trimmed)?.groupValues?.getOrNull(1)
-                                            }
-                                            trimmed.startsWith("http") && trimmed.contains(Regex("\\.(gif|png|jpe?g|webp)", RegexOption.IGNORE_CASE)) -> {
-                                                trimmed
-                                            }
-                                            else -> null
-                                        }
-
-                                        if (imgUrl != null) {
-                                            var isImgLoading by remember(imgUrl) { mutableStateOf(true) }
-                                            Box(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .defaultMinSize(minHeight = 120.dp)
-                                                    .clip(RoundedCornerShape(12.dp))
-                                                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                                            ) {
-                                                coil.compose.AsyncImage(
-                                                    model = coil.request.ImageRequest.Builder(LocalContext.current)
-                                                        .data(imgUrl.trim())
-                                                        .crossfade(true)
-                                                        .build(),
-                                                    contentDescription = "Release Image",
-                                                    onState = { state ->
-                                                        isImgLoading = state !is coil.compose.AsyncImagePainter.State.Success
-                                                    },
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .wrapContentHeight(),
-                                                    contentScale = androidx.compose.ui.layout.ContentScale.FillWidth
-                                                )
-                                                if (isImgLoading) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .matchParentSize()
-                                                            .shimmerEffect()
-                                                    )
-                                                }
-                                            }
-                                            return@forEach
-                                        }
-
-                                        // Clean bold markdown markers (e.g. **bold**)
-                                        val cleanLine = trimmed
-                                            .replace(Regex("\\*\\*(.*?)\\*\\*"), "$1")
-                                            .replace(Regex("__(.*?)__"), "$1")
-                                        
-                                        val primaryColor = MaterialTheme.colorScheme.primary
-
-                                        when {
-                                            // 1. Headers: #, ##, ###, ####
-                                            cleanLine.startsWith("#") -> {
-                                                val cleanHeader = cleanLine.replace(Regex("^#+\\s*"), "")
-                                                Text(
-                                                    text = cleanHeader,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = primaryColor,
-                                                    modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
-                                                )
-                                            }
-                                            // 2. Callout Boxes: Important:, Note:, Warning:
-                                            cleanLine.startsWith("Important:", ignoreCase = true) ||
-                                            cleanLine.startsWith("Note:", ignoreCase = true) ||
-                                            cleanLine.startsWith("Warning:", ignoreCase = true) -> {
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .height(androidx.compose.foundation.layout.IntrinsicSize.Min)
-                                                        .padding(vertical = 4.dp)
-                                                        .clip(RoundedCornerShape(4.dp))
-                                                        .background(primaryColor.copy(alpha = 0.08f))
-                                                        .padding(vertical = 8.dp, horizontal = 12.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .width(4.dp)
-                                                            .fillMaxHeight()
-                                                            .background(primaryColor, RoundedCornerShape(2.dp))
-                                                    )
-                                                    Spacer(modifier = Modifier.width(12.dp))
-                                                    Text(
-                                                        text = cleanLine,
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        color = MaterialTheme.colorScheme.onSurface,
-                                                        lineHeight = 20.sp,
-                                                        modifier = Modifier.weight(1f)
-                                                    )
-                                                }
-                                            }
-                                            // 3. Bullet points (List items)
-                                            cleanLine.startsWith("•") || cleanLine.startsWith("-") || cleanLine.startsWith("*") -> {
-                                                val cleanBullet = cleanLine
-                                                    .removePrefix("•")
-                                                    .removePrefix("-")
-                                                    .removePrefix("*")
-                                                    .trim()
-                                                
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
-                                                    verticalAlignment = Alignment.Top
-                                                 ) {
-                                                     Text(
-                                                         text = "•",
-                                                         style = MaterialTheme.typography.bodyMedium,
-                                                         color = primaryColor,
-                                                         modifier = Modifier.padding(end = 8.dp)
-                                                     )
-                                                     Text(
-                                                         text = cleanBullet,
-                                                         style = MaterialTheme.typography.bodyMedium,
-                                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                         modifier = Modifier.weight(1f),
-                                                         lineHeight = 20.sp
-                                                     )
-                                                 }
-                                             }
-                                             // 4. Horizontal Dividers: ---
-                                             cleanLine == "---" -> {
-                                                 Box(
-                                                     modifier = Modifier
-                                                         .fillMaxWidth()
-                                                         .padding(vertical = 8.dp)
-                                                         .height(1.dp)
-                                                         .background(MaterialTheme.colorScheme.outlineVariant)
-                                                 )
-                                             }
-                                             // 5. Standard paragraph text
-                                             else -> {
-                                                 Text(
-                                                     text = cleanLine,
-                                                     style = MaterialTheme.typography.bodyMedium,
-                                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                     lineHeight = 20.sp
-                                                 )
-                                             }
-                                         }
-                                     }
-                                 }
-                             }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun AboutScreen(
-    navController: androidx.navigation.NavController,
-    onCheckUpdate: () -> Unit,
-    onWhatsNew: () -> Unit,
-    onOpenUrl: (String) -> Unit
-) {
-    Scaffold(
-        topBar = { SettingsDetailTopBar("About") { navController.popBackStack() } }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 120.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // Hero App Logo (Elegant Box)
-            Box(
-                modifier = Modifier
-                    .size(120.dp)
-                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    painter = painterResource(R.drawable.ic_applogo),
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(72.dp)
-                )
-            }
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            Text(
-                text = stringResource(R.string.app_name),
-                style = MaterialTheme.typography.displaySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = (-0.5).sp
-            )
-            
-            // Version Pills
-            Row(
-                modifier = Modifier.padding(top = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh
-                ) {
-                    Text(
-                        text = BuildConfig.VERSION_NAME,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                    )
-                }
-            }
-            
-            // Action Buttons
-            androidx.compose.material3.ButtonGroup(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 32.dp)
-            ) {
-                Button(
-                    onClick = onCheckUpdate,
-                    modifier = Modifier.weight(1f).height(48.dp)
-                ) {
-                    Icon(Icons.Rounded.Update, null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Updates", style = MaterialTheme.typography.labelLarge)
-                }
-                Button(
-                    onClick = onWhatsNew,
-                    modifier = Modifier.weight(1f).height(48.dp)
-                ) {
-                    Icon(Icons.Rounded.Info, null, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("What's New", style = MaterialTheme.typography.labelLarge)
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(32.dp))
-            
-            DonateCard(onOpenUrl)
-            
-            Spacer(modifier = Modifier.height(16.dp))
-            
-            // Credits Card
-            CreditsCard(onOpenUrl)
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMPOSE UI — COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-@Composable
-private fun SettingsHeader(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleLarge,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(top = 24.dp, bottom = 12.dp)
-    )
-}
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun SettingsGroupCard(items: List<@Composable () -> Unit>) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)
-    ) {
-        items.forEachIndexed { index, item ->
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = getSettingsSegmentedShape(index = index, count = items.size),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh
-            ) {
-                item()
-            }
-        }
-    }
-}
-
-private fun getSettingsSegmentedShape(index: Int, count: Int): Shape {
-    val outer = 32.dp
-    val inner = 4.dp
-    return when {
-        count <= 1 -> RoundedCornerShape(outer)
-        index == 0 -> RoundedCornerShape(topStart = outer, topEnd = outer, bottomStart = inner, bottomEnd = inner)
-        index == count - 1 -> RoundedCornerShape(topStart = inner, topEnd = inner, bottomStart = outer, bottomEnd = outer)
-        else -> RoundedCornerShape(inner)
-    }
-}
 
 // ── Theme ────────────────────────────────────────────────────────────────────
 
@@ -3128,276 +3003,13 @@ private fun ThemeSwitch(checked: Boolean, onCheckedChange: ((Boolean) -> Unit)?)
 
 // ── Haptics ─────────────────────────────────────────────────────────────────
 
-@Composable
-private fun HapticsNotSupported() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = Icons.Default.Warning,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.error,
-            modifier = Modifier.size(24.dp)
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = stringResource(R.string.settings_haptics_not_supported),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.error
-        )
-    }
-}
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun VibrationStrengthRow(
-    value: Float, onValueChange: (Float) -> Unit, enabled: Boolean
-) {
-    val alpha by animateFloatAsState(
-        targetValue = if (enabled) 1f else 0.38f,
-        animationSpec = SmoothSpring,
-        label = "haptic_alpha"
-    )
-
-    ListItem(
-        onClick = { /* Slider handles interaction */ },
-        content = {
-            Text(
-                text = stringResource(R.string.setting_vibration_strength),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha)
-            )
-        },
-        supportingContent = {
-            Slider(
-                value = value.coerceIn(0f, 100f),
-                onValueChange = onValueChange,
-                enabled = enabled,
-                valueRange = 0f..100f,
-                steps = 3,
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
 
 // ── Wavy Divider ────────────────────────────────────────────────────────────
 
 // ── Crossfade ───────────────────────────────────────────────────────────────
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun CrossfadeRow(
-    enabled: Boolean,
-    onToggle: (Boolean) -> Unit,
-    duration: Float,
-    onDurationChange: (Float) -> Unit
-) {
-    ListItem(
-        onClick = { onToggle(!enabled) },
-        verticalAlignment = Alignment.CenterVertically,
-        content = {
-            Text(
-                text = stringResource(R.string.setting_crossfade),
-                style = MaterialTheme.typography.bodyLarge
-            )
-        },
-        supportingContent = {
-            Column {
-                AnimatedContent(
-                    targetState = if (enabled) "${duration.toInt()}s" else "Off",
-                    transitionSpec = {
-                        fadeIn(spring(stiffness = Spring.StiffnessMedium)) togetherWith
-                            fadeOut(spring(stiffness = Spring.StiffnessMedium))
-                    },
-                    label = "crossfade_label"
-                ) { label ->
-                    Text(
-                        text = label,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
-                AnimatedVisibility(visible = enabled) {
-                    Slider(
-                        value = duration,
-                        onValueChange = onDurationChange,
-                        enabled = enabled,
-                        valueRange = 0f..12f,
-                        steps = 11,
-                        modifier = Modifier.padding(vertical = 8.dp)
-                    )
-                }
-            }
-        },
-        trailingContent = { Switch(checked = enabled, onCheckedChange = onToggle) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
 
-// ── Audio Focus ─────────────────────────────────────────────────────────────
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun AudioFocusRow(enabled: Boolean, onToggle: (Boolean) -> Unit) {
-    ListItem(
-        onClick = { onToggle(!enabled) },
-        content = {
-            Column {
-                Text(
-                    text = stringResource(R.string.setting_audio_focus),
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                AnimatedContent(
-                    targetState = enabled,
-                    transitionSpec = {
-                        fadeIn(animationSpec = tween(220, delayMillis = 90)) togetherWith
-                        fadeOut(animationSpec = tween(90))
-                    },
-                    label = "audioFocusDesc"
-                ) { isEnabled ->
-                    Text(
-                        text = if (isEnabled) {
-                            "Stop or pause playback when another app plays audio"
-                        } else {
-                            "Do not stop or pause playback when another app plays audio"
-                        },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        },
-        leadingContent = {
-            Icon(
-                painter = painterResource(R.drawable.ic_audio_focus),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
-        },
-        trailingContent = { Switch(checked = enabled, onCheckedChange = onToggle) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-// ── Autoplay ─────────────────────────────────────────────────────────────
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun AutoplayRow(enabled: Boolean, onToggle: (Boolean) -> Unit) {
-    ListItem(
-        onClick = { onToggle(!enabled) },
-        content = {
-            Column {
-                Text(
-                    text = "Autoplay",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Similar songs will play next",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        leadingContent = {
-            Icon(
-                painter = painterResource(R.drawable.ic_queue_music),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
-        },
-        trailingContent = { Switch(checked = enabled, onCheckedChange = onToggle) },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-
-// ── Sleep Timer ─────────────────────────────────────────────────────────────
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun SleepTimerSection(
-    endTime: Long, 
-    mode: PlayerSharedViewModel.SleepTimerMode,
-    onStart: (Int) -> Unit, 
-    onCancel: () -> Unit,
-    onSetEndOfSong: (Boolean) -> Unit
-) {
-    var showBottomSheet by remember { mutableStateOf(false) }
-
-    val remaining by remember(endTime) {
-        derivedStateOf { endTime - System.currentTimeMillis() }
-    }
-
-    Column {
-        ListItem(
-            onClick = { showBottomSheet = true },
-            content = {
-                Text(
-                    text = stringResource(R.string.setting_sleep_timer),
-                    style = MaterialTheme.typography.bodyLarge
-                )
-            },
-            supportingContent = {
-                val supportingText = when (mode) {
-                    PlayerSharedViewModel.SleepTimerMode.OFF -> stringResource(R.string.setting_sleep_timer_off)
-                    PlayerSharedViewModel.SleepTimerMode.END_OF_SONG -> "Stop at end of current song"
-                    PlayerSharedViewModel.SleepTimerMode.END_OF_QUEUE -> "Stop at end of queue"
-                    PlayerSharedViewModel.SleepTimerMode.CUSTOM -> {
-                        if (remaining > 0) "${remaining / 60000} min remaining"
-                        else stringResource(R.string.setting_sleep_timer_off)
-                    }
-                }
-                Text(
-                    text = supportingText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            },
-            leadingContent = {
-                Icon(
-                    painter = painterResource(R.drawable.ic_timer),
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(24.dp)
-                )
-            },
-            trailingContent = {
-                Icon(
-                    imageVector = Icons.Default.ChevronRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            },
-            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-        )
-
-        if (showBottomSheet) {
-            SleepTimerBottomSheet(
-                onDismissRequest = { showBottomSheet = false },
-                sleepTimerEndTime = endTime,
-                sleepTimerMode = mode,
-                onStartTimer = { mins ->
-                    onStart(mins)
-                },
-                onCancelTimer = {
-                    onCancel()
-                },
-                onSetEndOfSong = { enable ->
-                    onSetEndOfSong(enable)
-                }
-            )
-        }
-    }
-}
 
 // ── Library ─────────────────────────────────────────────────────────────────
 
@@ -3422,506 +3034,9 @@ private fun LibrarySourceHeader() {
     )
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun LibraryPathRow(path: String, onRemove: ((String) -> Unit)?) {
-    ListItem(
-        onClick = { },
-        content = {
-            Text(
-                text = path.substringAfterLast(":"),
-                style = MaterialTheme.typography.bodyLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        },
-        leadingContent = {
-            Icon(
-                painter = painterResource(
-                    if (onRemove != null) R.drawable.ic_folder_music else R.drawable.ic_folder_open
-                ),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
-        },
-        trailingContent = if (onRemove != null) {
-            {
-                Text(
-                    text = "Remove",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable { onRemove(path) }
-                        .padding(8.dp)
-                )
-            }
-        } else null,
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun AddMorePathRow(onClick: () -> Unit) {
-    ListItem(
-        onClick = onClick,
-        content = {
-            Text(
-                text = stringResource(R.string.setting_add_more_path),
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.primary
-            )
-        },
-        leadingContent = {
-            Icon(
-                imageVector = Icons.Default.Add,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(24.dp)
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
 
-// ── Storage ─────────────────────────────────────────────────────────────────
 
-@Composable
-private fun DownloadFolderRow(path: String?, onClick: () -> Unit) {
-    ListItem(
-        onClick = onClick,
-        content = {
-            Column {
-                Text(
-                    text = "Download Location",
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = path ?: "Not Set",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        },
-        leadingContent = {
-            Icon(
-                painter = painterResource(R.drawable.ic_folder_open),
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-@Composable
-private fun CacheSizeRow(
-    title: String,
-    currentSize: String, // from calculation, e.g. "120 MB"
-    maxSize: Int,
-    onMaxSizeChange: (Int) -> Unit,
-    onClear: () -> Unit
-) {
-    var showDialog by remember { mutableStateOf(false) }
-
-    if (showDialog) {
-        AlertDialog(
-            onDismissRequest = { showDialog = false },
-            title = { Text("Max $title Size") },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    listOf(100, 500, 1024, 2048, 0).forEach { sizeOption ->
-                        val text = if (sizeOption == 0) "Unlimited" else if (sizeOption >= 1024) "${sizeOption / 1024} GB" else "$sizeOption MB"
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onMaxSizeChange(sizeOption)
-                                    showDialog = false
-                                }
-                                .padding(vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = (maxSize == sizeOption),
-                                onClick = {
-                                    onMaxSizeChange(sizeOption)
-                                    showDialog = false
-                                }
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Text(text = text, style = MaterialTheme.typography.bodyLarge)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showDialog = false }) { Text("Cancel") }
-            }
-        )
-    }
-
-    // Extract numerical value roughly to show progress
-    val currentBytes = parseCacheSize(currentSize)
-    val maxBytes = if (maxSize == 0) 0L else maxSize * 1024L * 1024L
-    val progress = if (maxBytes > 0) (currentBytes.toFloat() / maxBytes).coerceIn(0f, 1f) else 0f
-
-    ListItem(
-        onClick = { showDialog = true },
-        content = {
-            Column {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Spacer(modifier = Modifier.height(2.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    AnimatedContent(
-                        targetState = currentSize,
-                        transitionSpec = {
-                            fadeIn(spring(stiffness = Spring.StiffnessMedium)) togetherWith
-                                fadeOut(spring(stiffness = Spring.StiffnessMedium))
-                        },
-                        label = "cache_size"
-                    ) { size ->
-                        Text(
-                            text = size,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    
-                    val maxText = if (maxSize == 0) "Unlimited" else if (maxSize >= 1024) "${maxSize / 1024} GB" else "$maxSize MB"
-                    Text(
-                        text = "Max: $maxText",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (maxBytes > 0) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LinearProgressIndicator(
-                        progress = { progress },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(50)),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                }
-            }
-        },
-        trailingContent = {
-            IconButton(onClick = onClear) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Clear Cache",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-    )
-}
-
-// Very basic string parsing for cache size
-private fun parseCacheSize(sizeStr: String): Long {
-    try {
-        val split = sizeStr.trim().split(" ")
-        if (split.size != 2) return 0L
-        val value = split[0].toFloatOrNull() ?: return 0L
-        val unit = split[1].uppercase()
-        return when (unit) {
-            "KB" -> (value * 1024).toLong()
-            "MB" -> (value * 1024 * 1024).toLong()
-            "GB" -> (value * 1024 * 1024 * 1024).toLong()
-            "B" -> value.toLong()
-            else -> 0L
-        }
-    } catch (_: Exception) {
-        return 0L
-    }
-}
-
-@Composable
-private fun SongCacheSizeRow(
-    cacheSize: String,
-    maxSize: Int,
-    onMaxSizeChange: (Int) -> Unit,
-    onClear: () -> Unit
-) {
-    CacheSizeRow(
-        title = "Song Cache",
-        currentSize = cacheSize,
-        maxSize = maxSize,
-        onMaxSizeChange = onMaxSizeChange,
-        onClear = onClear
-    )
-}
-
-@Composable
-private fun ImageCacheSizeRow(
-    cacheSize: String,
-    maxSize: Int,
-    onMaxSizeChange: (Int) -> Unit,
-    onClear: () -> Unit
-) {
-    CacheSizeRow(
-        title = "Image Cache",
-        currentSize = cacheSize,
-        maxSize = maxSize,
-        onMaxSizeChange = onMaxSizeChange,
-        onClear = onClear
-    )
-}
-
-// ── Credits ─────────────────────────────────────────────────────────────────
-
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
-@Composable
-private fun CreditsCard(onOpenUrl: (String) -> Unit) {
-    val context = LocalContext.current
-    Column {
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLow
-            )
-        ) {
-            Column(
-                modifier = Modifier
-                    .padding(32.dp)
-                    .fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                val morphState = rememberExpressiveShapeMorph(
-                    segmentDurationMillis = 1400,
-                    rotationDurationMillis = 12000
-                )
-
-                var isImageLoading by remember { mutableStateOf(true) }
-                val loadedProgress by animateFloatAsState(
-                    targetValue = if (isImageLoading) 0f else 1f,
-                    animationSpec = MaterialTheme.motionScheme.defaultEffectsSpec(),
-                    label = "loadedProgress"
-                )
-
-                val imageMorph = remember { Morph(MaterialShapes.Cookie6Sided, MaterialShapes.Circle) }
-                val imageMaskShape = MorphShape(imageMorph, loadedProgress)
-
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.size(200.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(morphState.morphShape)
-                            .background(
-                                brush = Brush.sweepGradient(
-                                    colors = listOf(
-                                        MaterialTheme.colorScheme.primary,
-                                        MaterialTheme.colorScheme.secondary,
-                                        MaterialTheme.colorScheme.tertiary,
-                                        MaterialTheme.colorScheme.primary
-                                    )
-                                )
-                            )
-                    )
-                    
-                    // Inner separator circle
-                    Box(
-                        modifier = Modifier
-                            .size(120.dp)
-                            .background(
-                                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                                shape = CircleShape
-                            )
-                    )
-
-                    // Static Profile Picture (No movement, morphs to circle when loaded)
-                    coil.compose.AsyncImage(
-                        model = "https://github.com/MythicalSHUB.png",
-                        contentDescription = "Shubham Karande",
-                        onState = { state ->
-                            if (state is coil.compose.AsyncImagePainter.State.Success) {
-                                isImageLoading = false
-                            }
-                        },
-                        modifier = Modifier
-                            .size(108.dp)
-                            .clip(imageMaskShape)
-                            .graphicsLayer {
-                                alpha = loadedProgress
-                            },
-                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                    )
-
-                    // Shimmer loader placeholder
-                    if (loadedProgress < 1f) {
-                        val shimmerColors = listOf(
-                            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f),
-                            MaterialTheme.colorScheme.surfaceContainerHighest,
-                            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.6f)
-                        )
-
-                        val shimmerTransition = rememberInfiniteTransition(label = "shimmer")
-                        val shimmerTranslateX by shimmerTransition.animateFloat(
-                            initialValue = -200f,
-                            targetValue = 200f,
-                            animationSpec = infiniteRepeatable(
-                                animation = tween(1200, easing = LinearEasing),
-                                repeatMode = RepeatMode.Restart
-                            ),
-                            label = "shimmerTranslateX"
-                        )
-
-                        val shimmerBrush = Brush.linearGradient(
-                            colors = shimmerColors,
-                            start = Offset(shimmerTranslateX - 80f, 0f),
-                            end = Offset(shimmerTranslateX + 80f, 160f)
-                        )
-
-                        Box(
-                            modifier = Modifier
-                                .size(108.dp)
-                                .graphicsLayer {
-                                    alpha = 1f - loadedProgress
-                                }
-                                .clip(imageMaskShape)
-                                .background(brush = shimmerBrush)
-                        )
-                    }
-                }
-                
-                Text(
-                    text = "Shubham Karande",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(top = 16.dp)
-                )
-                Text(
-                    text = "Android Developer",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp)
-                )
-                
-                Row(
-                    modifier = Modifier.padding(top = 24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    SocialIconButton(icon = R.drawable.ic_github, onClick = { onOpenUrl("https://github.com/MythicalSHUB") })
-                    SocialIconButton(icon = R.drawable.ic_telegram, onClick = { com.codetrio.spatialflow.util.TelegramHelper.openTelegram(context, domain = "SpatialFlow") })
-                    SocialIconButton(icon = R.drawable.ic_kofi, onClick = { onOpenUrl("https://ko-fi.com/mythicalshub") })
-                    SocialIconButton(icon = R.drawable.ic_instagram, onClick = { onOpenUrl("https://instagram.com/mythicalshub") })
-                    SocialIconButton(icon = R.drawable.ic_youtube, onClick = { onOpenUrl("https://youtube.com/@8dmusic_s") })
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SocialIconButton(icon: Int, onClick: () -> Unit) {
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier
-            .size(48.dp)
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f), CircleShape)
-    ) {
-        Icon(
-            painter = painterResource(id = icon),
-            contentDescription = null,
-            modifier = Modifier.size(24.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-private fun DonateCard(onOpenUrl: (String) -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, Color(0xFFFF5E5B).copy(alpha = 0.3f), RoundedCornerShape(24.dp)),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFFFF5E5B).copy(alpha = 0.1f)
-        )
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(Color.White, CircleShape)
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    coil.compose.AsyncImage(
-                        model = "https://storage.ko-fi.com/cdn/brandasset/v2/kofi_symbol.png",
-                        contentDescription = "Ko-fi Symbol",
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(
-                        text = "Support SpatialFlow",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Buy me a coffee to support development!",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Button(
-                onClick = { onOpenUrl("https://ko-fi.com/mythicalshub") },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFFFF5E5B),
-                    contentColor = Color.White
-                ),
-                shape = RoundedCornerShape(16.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    text = "Donate",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-    }
-}
 
 // SocialButton is replaced by ButtonGroup clickableItem
 
@@ -3963,7 +3078,7 @@ private fun AppLogoSection(isLandscape: Boolean) {
             letterSpacing = 0.sp
         )
         Text(
-            text = "© 2025 Shubham Karande",
+            text = "© 2026 Shubham Karande",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp)
@@ -3971,75 +3086,6 @@ private fun AppLogoSection(isLandscape: Boolean) {
     }
 }
 
-@SuppressLint("SetJavaScriptEnabled")
-@Composable
-fun YouTubeMusicLoginDialog(
-    onDismissRequest: () -> Unit,
-    onLoginSuccess: (String) -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismissRequest,
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismissRequest) {
-                Text("Cancel", color = MaterialTheme.colorScheme.primary)
-            }
-        },
-        title = {
-            Text(
-                text = "Log In to YouTube Music",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth().height(420.dp)) {
-                Text(
-                    text = "Sign in to access your real playlists, library, and personalized interests.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(Color.White)
-                ) {
-                    AndroidView(
-                        factory = { context ->
-                            WebView(context).apply {
-                                settings.javaScriptEnabled = true
-                                settings.domStorageEnabled = true
-                                settings.userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-                                
-                                webViewClient = object : WebViewClient() {
-                                    override fun onPageFinished(view: WebView?, url: String?) {
-                                        super.onPageFinished(view, url)
-                                        val cookieManager = CookieManager.getInstance()
-                                        val cookies = cookieManager.getCookie("https://music.youtube.com")
-                                        if (cookies != null && cookies.contains("SAPISID") && cookies.contains("HSID")) {
-                                            onLoginSuccess(cookies)
-                                        }
-                                    }
-                                }
-                                
-                                // Load Google login continuing to YouTube Music
-                                loadUrl("https://accounts.google.com/ServiceLogin?service=youtube&passive=true&continue=https://music.youtube.com/")
-                            }
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-            }
-        },
-        shape = RoundedCornerShape(28.dp),
-        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
-        modifier = Modifier.padding(horizontal = 24.dp)
-    )
-}
 
 // ── Feedback & Bug Reports ──────────────────────────────────────────────────
 
@@ -4071,64 +3117,168 @@ private fun FeedbackScreen(navController: androidx.navigation.NavController) {
                 items = listOf(
                     {
                         ListItem(
-                            headlineContent = { Text("Report a Bug", style = MaterialTheme.typography.bodyLarge) },
-                            supportingContent = { Text("Open GitHub with pre-filled device information", style = MaterialTheme.typography.bodyMedium) },
-                            leadingContent = { Icon(Icons.Rounded.BugReport, null, tint = MaterialTheme.colorScheme.error) },
+                            headlineContent = {
+                                Text(
+                                    "Report a Bug",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    "Open GitHub with pre-filled device information",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.BugReport,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable {
                                 val title = URLEncoder.encode("[Bug] ", "UTF-8")
-                                val body = URLEncoder.encode("## Description\n\n\n## Device Information\n$debugInfo\n\n## Steps to Reproduce\n1.\n2.\n3.\n", "UTF-8")
-                                val url = "https://github.com/MythicalSHUB/SpatialFlow/issues/new?title=$title&body=$body"
+                                val body = URLEncoder.encode(
+                                    "## Description\n\n\n## Device Information\n$debugInfo\n\n## Steps to Reproduce\n1.\n2.\n3.\n",
+                                    "UTF-8"
+                                )
+                                val url =
+                                    "https://github.com/MythicalSHUB/SpatialFlow/issues/new?title=$title&body=$body"
                                 context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
                             }
                         )
                     },
                     {
                         ListItem(
-                            headlineContent = { Text("Report Bug via Telegram", style = MaterialTheme.typography.bodyLarge) },
-                            supportingContent = { Text("Share pre-filled device and app details directly to Telegram", style = MaterialTheme.typography.bodyMedium) },
-                            leadingContent = { Icon(painter = painterResource(id = R.drawable.ic_telegram), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp)) },
+                            headlineContent = {
+                                Text(
+                                    "Report Bug via Telegram",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    "Share pre-filled device and app details directly to Telegram",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_telegram),
+                                    null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable {
-                                val telegramMsg = "SPATIALFLOW BUG REPORT\n\n$debugInfo\n\nDescribe the bug/issue below:\n"
-                                val url = "https://t.me/share/url?url=&text=${URLEncoder.encode(telegramMsg, "UTF-8")}"
+                                val telegramMsg =
+                                    "SPATIALFLOW BUG REPORT\n\n$debugInfo\n\nDescribe the bug/issue below:\n"
+                                val url = "https://t.me/share/url?url=&text=${
+                                    URLEncoder.encode(
+                                        telegramMsg,
+                                        "UTF-8"
+                                    )
+                                }"
                                 try {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                    context.startActivity(
+                                        Intent(
+                                            Intent.ACTION_VIEW,
+                                            Uri.parse(url)
+                                        )
+                                    )
                                 } catch (e: Exception) {
-                                    val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clipboardManager =
+                                        context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     val clip = ClipData.newPlainText("Bug Report", telegramMsg)
                                     clipboardManager.setPrimaryClip(clip)
-                                    android.widget.Toast.makeText(context, "Report template copied. Paste in Telegram.", android.widget.Toast.LENGTH_LONG).show()
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/SpatialFlow")))
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Report template copied. Paste in Telegram.",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                    context.startActivity(
+                                        Intent(
+                                            Intent.ACTION_VIEW,
+                                            Uri.parse("https://t.me/SpatialFlow")
+                                        )
+                                    )
                                 }
                             }
                         )
                     },
                     {
                         ListItem(
-                            headlineContent = { Text("Request Feature", style = MaterialTheme.typography.bodyLarge) },
-                            supportingContent = { Text("Suggest a new feature for SpatialFlow", style = MaterialTheme.typography.bodyMedium) },
-                            leadingContent = { Icon(Icons.Rounded.OpenInNew, null, tint = MaterialTheme.colorScheme.primary) },
+                            headlineContent = {
+                                Text(
+                                    "Request Feature",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    "Suggest a new feature for SpatialFlow",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.OpenInNew,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable {
                                 val title = URLEncoder.encode("[Feature] ", "UTF-8")
-                                val body = URLEncoder.encode("## Feature Description\n\n\n## Why is this needed?\n\n", "UTF-8")
-                                val url = "https://github.com/MythicalSHUB/SpatialFlow/issues/new?title=$title&body=$body"
+                                val body = URLEncoder.encode(
+                                    "## Feature Description\n\n\n## Why is this needed?\n\n",
+                                    "UTF-8"
+                                )
+                                val url =
+                                    "https://github.com/MythicalSHUB/SpatialFlow/issues/new?title=$title&body=$body"
                                 context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
                             }
                         )
                     },
                     {
                         ListItem(
-                            headlineContent = { Text("Join Telegram Community", style = MaterialTheme.typography.bodyLarge) },
-                            supportingContent = { Text("Chat with the community and developer", style = MaterialTheme.typography.bodyMedium) },
-                            leadingContent = { Icon(painter = painterResource(id = R.drawable.ic_telegram), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp)) },
+                            headlineContent = {
+                                Text(
+                                    "Join Telegram Community",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    "Chat with the community and developer",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.ic_telegram),
+                                    null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable {
                                 try {
-                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/SpatialFlow")))
+                                    context.startActivity(
+                                        Intent(
+                                            Intent.ACTION_VIEW,
+                                            Uri.parse("https://t.me/SpatialFlow")
+                                        )
+                                    )
                                 } catch (e: Exception) {
-                                    android.widget.Toast.makeText(context, "Could not open Telegram link", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Could not open Telegram link",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
                                 }
                             }
                         )
@@ -4141,12 +3291,56 @@ private fun FeedbackScreen(navController: androidx.navigation.NavController) {
                 items = listOf(
                     {
                         ListItem(
-                            headlineContent = { Text("Copy Debug Information", style = MaterialTheme.typography.bodyLarge) },
-                            supportingContent = { Text("Copy device & app version to clipboard", style = MaterialTheme.typography.bodyMedium) },
-                            leadingContent = { Icon(Icons.Rounded.ContentCopy, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                            headlineContent = {
+                                Text(
+                                    "Developer Logger",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    "Live on-device logcat viewer with Android Studio style filters",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.BugReport,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable {
-                                val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                navController.navigate(SettingsRoute.DeveloperLogger.route)
+                            }
+                        )
+                    },
+                    {
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    "Copy Debug Information",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    "Copy device & app version to clipboard",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.ContentCopy,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                            modifier = Modifier.clickable {
+                                val clipboardManager =
+                                    context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                 val clip = ClipData.newPlainText("Debug Info", debugInfo)
                                 clipboardManager.setPrimaryClip(clip)
                             }
@@ -4154,9 +3348,25 @@ private fun FeedbackScreen(navController: androidx.navigation.NavController) {
                     },
                     {
                         ListItem(
-                            headlineContent = { Text("Export Logs", style = MaterialTheme.typography.bodyLarge) },
-                            supportingContent = { Text("Share raw debug logs to attach to an issue", style = MaterialTheme.typography.bodyMedium) },
-                            leadingContent = { Icon(Icons.Rounded.Description, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                            headlineContent = {
+                                Text(
+                                    "Export Logs",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    "Share raw debug logs to attach to an issue",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.Description,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable {
                                 val sendIntent: Intent = Intent().apply {
@@ -4164,15 +3374,36 @@ private fun FeedbackScreen(navController: androidx.navigation.NavController) {
                                     putExtra(Intent.EXTRA_TEXT, debugInfo)
                                     type = "text/plain"
                                 }
-                                context.startActivity(Intent.createChooser(sendIntent, "Export Logs"))
+                                context.startActivity(
+                                    Intent.createChooser(
+                                        sendIntent,
+                                        "Export Logs"
+                                    )
+                                )
                             }
                         )
                     },
                     {
                         ListItem(
-                            headlineContent = { Text("Simulate Crash", style = MaterialTheme.typography.bodyLarge) },
-                            supportingContent = { Text("Force a runtime exception to test crash report dialog", style = MaterialTheme.typography.bodyMedium) },
-                            leadingContent = { Icon(Icons.Rounded.BugReport, null, tint = MaterialTheme.colorScheme.error) },
+                            headlineContent = {
+                                Text(
+                                    "Simulate Crash",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            },
+                            supportingContent = {
+                                Text(
+                                    "Force a runtime exception to test crash report dialog",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Rounded.BugReport,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
                             colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                             modifier = Modifier.clickable {
                                 throw RuntimeException("Simulated App Crash: The user triggered a test exception.")
@@ -4181,6 +3412,559 @@ private fun FeedbackScreen(navController: androidx.navigation.NavController) {
                     }
                 )
             )
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOWNLOADS SCREEN (MATERIAL 3 EXPRESSIVE)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
+@Composable
+private fun DownloadsScreen(
+    navController: androidx.navigation.NavController,
+    wifiOnlyDownload: Boolean,
+    onWifiOnlyDownloadChange: (Boolean) -> Unit,
+    downloadAudioQuality: String,
+    onDownloadAudioQualityChange: (String) -> Unit,
+    downloadAudioFormat: String,
+    onDownloadAudioFormatChange: (String) -> Unit,
+    autoDownloadFavorites: Boolean,
+    onAutoDownloadFavoritesChange: (Boolean) -> Unit,
+    offlineLyrics: Boolean,
+    onOfflineLyricsChange: (Boolean) -> Unit,
+    offlineOnlyMode: Boolean,
+    onOfflineOnlyModeChange: (Boolean) -> Unit,
+    downloadFolder: String?,
+    onDownloadFolderClick: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var selectedTab by remember { mutableStateOf(0) }
+    var downloadedSongs by remember { mutableStateOf(emptyList<com.codetrio.spatialflow.model.SongItem>()) }
+    var storageBytes by remember { mutableStateOf(0L) }
+    var songToDeleteConfirm by remember { mutableStateOf<com.codetrio.spatialflow.model.SongItem?>(null) }
+    val downloadProgressMap by com.codetrio.spatialflow.util.SongDownloader.downloadProgress.collectAsStateWithLifecycle()
+
+    fun refreshData() {
+        scope.launch(Dispatchers.IO) {
+            val songs = com.codetrio.spatialflow.util.SongDownloader.getAllDownloadedSongs(context)
+            val bytes = com.codetrio.spatialflow.util.SongDownloader.getDownloadedStorageBytes(context)
+            withContext(Dispatchers.Main) {
+                downloadedSongs = songs
+                storageBytes = bytes
+            }
+        }
+    }
+
+    fun formatStorage(bytes: Long): String {
+        if (bytes <= 0) return "0 B"
+        val units = arrayOf("B", "KB", "MB", "GB")
+        val digitGroups = (Math.log10(bytes.toDouble()) / Math.log10(1024.0)).toInt().coerceAtMost(units.size - 1)
+        return DecimalFormat("#.##").format(bytes / Math.pow(1024.0, digitGroups.toDouble())) + " " + units[digitGroups]
+    }
+
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                refreshData()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    if (songToDeleteConfirm != null) {
+        val s = songToDeleteConfirm!!
+        AlertDialog(
+            onDismissRequest = { songToDeleteConfirm = null },
+            title = { Text("Delete Track?", fontWeight = FontWeight.Bold) },
+            text = { Text("Are you sure you want to delete '${s.title}' by ${s.artist} from offline storage?") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val target = songToDeleteConfirm
+                        songToDeleteConfirm = null
+                        if (target != null) {
+                            com.codetrio.spatialflow.util.SongDownloader.deleteDownloadedSong(context, target)
+                            refreshData()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { songToDeleteConfirm = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Scaffold(
+        topBar = { SettingsDetailTopBar("Downloads") { navController.popBackStack() } }
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+        ) {
+            val haptic = LocalHapticFeedback.current
+
+            ButtonGroup(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+                expandedRatio = 0.25f,
+                overflowIndicator = {}
+            ) {
+                val scope = this
+                val tabs = listOf(
+                    Triple(0, Icons.Rounded.Download, "Manager & Format"),
+                    Triple(1, Icons.Rounded.MusicNote, "Tracks (${downloadedSongs.size})")
+                )
+                tabs.forEach { (tabIdx, iconVector, label) ->
+                    val checked = selectedTab == tabIdx
+                    customItem(
+                        buttonGroupContent = {
+                            val interactionSource = remember { MutableInteractionSource() }
+                            val isPressed by interactionSource.collectIsPressedAsState()
+                            val cornerRadius by animateDpAsState(
+                                targetValue = if (isPressed) 6.dp else if (checked) 20.dp else 10.dp,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                    stiffness = Spring.StiffnessMedium
+                                ),
+                                label = "DownloadsTabCorner"
+                            )
+
+                            Button(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    selectedTab = tabIdx
+                                    refreshData()
+                                },
+                                modifier = with(scope) {
+                                    Modifier
+                                        .animateWidth(interactionSource)
+                                        .weight(1f)
+                                        .height(48.dp)
+                                },
+                                interactionSource = interactionSource,
+                                shape = RoundedCornerShape(cornerRadius),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (checked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    contentColor = if (checked) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                ),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        imageVector = iconVector,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (checked) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                }
+                            }
+                        },
+                        menuContent = {}
+                    )
+                }
+            }
+
+            if (selectedTab == 0) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp)
+                        .padding(bottom = 120.dp)
+                ) {
+                    SettingsHeader("Storage & Offline Status")
+                    Card(
+                        shape = RoundedCornerShape(24.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 16.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(20.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column {
+                                    Text(
+                                        text = "${downloadedSongs.size} Tracks Saved",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "${formatStorage(storageBytes)} used by SpatialFlow downloads",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (downloadProgressMap.isNotEmpty()) {
+                                    CircularWavyProgressIndicator(
+                                        modifier = Modifier.size(32.dp),
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Rounded.DownloadDone,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+                            }
+
+                            Spacer(Modifier.height(16.dp))
+
+                            if (downloadProgressMap.isNotEmpty()) {
+                                Text(
+                                    text = "Active Downloading (${downloadProgressMap.size} files)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                LinearWavyProgressIndicator(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                val progressFloat = (storageBytes.toFloat() / (1024 * 1024 * 1024 * 5f)).coerceIn(0.02f, 1f)
+                                LinearWavyProgressIndicator(
+                                    progress = { progressFloat },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            Spacer(Modifier.height(16.dp))
+
+                            Button(
+                                onClick = { selectedTab = 1 },
+                                shape = RoundedCornerShape(24.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Rounded.MusicNote, contentDescription = null)
+                                Spacer(Modifier.width(8.dp))
+                                Text("View All Tracks")
+                            }
+                        }
+                    }
+
+                    SettingsHeader("Offline & Network Behavior")
+                    SettingsGroupCard(
+                        items = listOf(
+                            {
+                                ListItem(
+                                    headlineContent = { Text("Offline Only Mode") },
+                                    supportingContent = { Text("Hide remote streams and prioritize local downloads") },
+                                    leadingContent = {
+                                        ToggleButton(
+                                            checked = offlineOnlyMode,
+                                            onCheckedChange = onOfflineOnlyModeChange,
+                                            shapes = ToggleButtonDefaults.shapes(shape = if (offlineOnlyMode) RoundedCornerShape(16.dp) else CircleShape),
+                                            colors = ToggleButtonDefaults.toggleButtonColors(
+                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        ) {
+                                            Icon(Icons.Rounded.DownloadForOffline, contentDescription = null)
+                                        }
+                                    },
+                                    trailingContent = {
+                                        Switch(
+                                            checked = offlineOnlyMode,
+                                            onCheckedChange = onOfflineOnlyModeChange
+                                        )
+                                    }
+                                )
+                            },
+                            {
+                                ListItem(
+                                    headlineContent = { Text("Download over Wi-Fi Only") },
+                                    supportingContent = { Text("Prevent downloading songs on cellular mobile data") },
+                                    leadingContent = {
+                                        ToggleButton(
+                                            checked = wifiOnlyDownload,
+                                            onCheckedChange = onWifiOnlyDownloadChange,
+                                            shapes = ToggleButtonDefaults.shapes(shape = if (wifiOnlyDownload) RoundedCornerShape(16.dp) else CircleShape),
+                                            colors = ToggleButtonDefaults.toggleButtonColors(
+                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        ) {
+                                            Icon(if (wifiOnlyDownload) Icons.Rounded.Wifi else Icons.Rounded.SignalWifiOff, contentDescription = null)
+                                        }
+                                    },
+                                    trailingContent = {
+                                        Switch(
+                                            checked = wifiOnlyDownload,
+                                            onCheckedChange = onWifiOnlyDownloadChange
+                                        )
+                                    }
+                                )
+                            },
+                            {
+                                ListItem(
+                                    headlineContent = { Text("Auto-Download Favorites") },
+                                    supportingContent = { Text("Automatically download tracks when added to Favorites") },
+                                    leadingContent = {
+                                        ToggleButton(
+                                            checked = autoDownloadFavorites,
+                                            onCheckedChange = onAutoDownloadFavoritesChange,
+                                            shapes = ToggleButtonDefaults.shapes(shape = if (autoDownloadFavorites) RoundedCornerShape(16.dp) else CircleShape),
+                                            colors = ToggleButtonDefaults.toggleButtonColors(
+                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        ) {
+                                            Icon(Icons.Rounded.Download, contentDescription = null)
+                                        }
+                                    },
+                                    trailingContent = {
+                                        Switch(
+                                            checked = autoDownloadFavorites,
+                                            onCheckedChange = onAutoDownloadFavoritesChange
+                                        )
+                                    }
+                                )
+                            },
+                            {
+                                ListItem(
+                                    headlineContent = { Text("Offline Synced Lyrics") },
+                                    supportingContent = { Text("Fetch and save LRC lyrics files alongside tracks") },
+                                    leadingContent = {
+                                        ToggleButton(
+                                            checked = offlineLyrics,
+                                            onCheckedChange = onOfflineLyricsChange,
+                                            shapes = ToggleButtonDefaults.shapes(shape = if (offlineLyrics) RoundedCornerShape(16.dp) else CircleShape),
+                                            colors = ToggleButtonDefaults.toggleButtonColors(
+                                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        ) {
+                                            Icon(Icons.Rounded.Lyrics, contentDescription = null)
+                                        }
+                                    },
+                                    trailingContent = {
+                                        Switch(
+                                            checked = offlineLyrics,
+                                            onCheckedChange = onOfflineLyricsChange
+                                        )
+                                    }
+                                )
+                            }
+                        )
+                    )
+
+                    SettingsHeader("Format & Quality")
+                    Card(
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 16.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Audio Container Format",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Opus provides higher efficiency; MP3 offers maximum legacy compatibility",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(12.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                listOf("Opus", "MP3", "FLAC").forEach { fmt ->
+                                    val selected = downloadAudioFormat.equals(fmt, ignoreCase = true)
+                                    FilledTonalButton(
+                                        onClick = { onDownloadAudioFormatChange(fmt) },
+                                        colors = if (selected)
+                                            ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.primary, contentColor = MaterialTheme.colorScheme.onPrimary)
+                                        else ButtonDefaults.filledTonalButtonColors(),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp)
+                                    ) {
+                                        Text(fmt, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+
+                            Spacer(Modifier.height(20.dp))
+
+                            Text(
+                                text = "Audio Bitrate Quality",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "High (256/320kbps), Medium (160kbps), Data Saver (96kbps)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.height(12.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                listOf("High", "Medium", "Low").forEach { q ->
+                                    val selected = downloadAudioQuality.equals(q, ignoreCase = true)
+                                    FilledTonalButton(
+                                        onClick = { onDownloadAudioQualityChange(q) },
+                                        colors = if (selected)
+                                            ButtonDefaults.filledTonalButtonColors(containerColor = MaterialTheme.colorScheme.secondary, contentColor = MaterialTheme.colorScheme.onSecondary)
+                                        else ButtonDefaults.filledTonalButtonColors(),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(48.dp)
+                                    ) {
+                                        Text(
+                                            text = if (q == "Low") "Data Saver" else q,
+                                            fontWeight = FontWeight.Bold,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    SettingsHeader("Storage Destination")
+                    SettingsGroupCard(
+                        items = listOf(
+                            {
+                                ListItem(
+                                    headlineContent = { Text("Download Directory") },
+                                    supportingContent = { Text(downloadFolder ?: "Default: Downloads / SpatialFlow / Songs") },
+                                    leadingContent = { Icon(Icons.Rounded.Folder, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                                    modifier = Modifier.clickable { onDownloadFolderClick() }
+                                )
+                            }
+                        )
+                    )
+                }
+
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 24.dp)
+                ) {
+                    SettingsHeader("Downloaded Offline Songs (${downloadedSongs.size})")
+
+                    if (downloadedSongs.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(220.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(
+                                    Icons.Rounded.Download,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(56.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.height(12.dp))
+                                Text(
+                                    "No downloaded songs yet",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    "Downloaded tracks will appear here for offline playback",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    } else {
+                        androidx.compose.foundation.lazy.LazyColumn(
+                            contentPadding = PaddingValues(bottom = 120.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            itemsIndexed(
+                                items = downloadedSongs,
+                                key = { idx, song -> "dl_song_${idx}_${song.id}" }
+                            ) { _, song ->
+                                Card(
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    ListItem(
+                                        headlineContent = { Text(song.title, maxLines = 1, fontWeight = FontWeight.SemiBold) },
+                                        supportingContent = { Text(song.artist, maxLines = 1) },
+                                        leadingContent = {
+                                            Surface(
+                                                shape = RoundedCornerShape(16.dp.concentricInner(8.dp)),
+                                                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                                                modifier = Modifier.size(44.dp)
+                                            ) {
+                                                SpatialImage(
+                                                    model = song,
+                                                    contentDescription = null,
+                                                    size = ImageSemanticSize.ThumbnailSmall,
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier.fillMaxSize(),
+                                                    error = painterResource(id = R.drawable.default_album_art)
+                                                )
+                                            }
+                                        },
+                                        trailingContent = {
+                                            IconButton(
+                                                onClick = {
+                                                    songToDeleteConfirm = song
+                                                }
+                                            ) {
+                                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

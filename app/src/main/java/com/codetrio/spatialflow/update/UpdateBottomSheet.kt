@@ -2,6 +2,8 @@
 
 package com.codetrio.spatialflow.update
 
+import com.codetrio.spatialflow.ui.explore.ImageSemanticSize
+import com.codetrio.spatialflow.ui.explore.SpatialImage
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.StrokeCap
 
@@ -41,10 +43,12 @@ import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.core.content.FileProvider
 import com.codetrio.spatialflow.ui.theme.SpatialFlowTheme
 import com.codetrio.spatialflow.ui.explore.shimmerEffect
@@ -269,6 +273,8 @@ fun UpdateBottomSheetContent(
                     && !trimmed.startsWith("<img", ignoreCase = true)  // HTML img tag
                     && !trimmed.startsWith("#")            // Markdown headings
                     && !trimmed.matches(Regex("""^https?://\S+\.(gif|png|jpe?g|webp)(\?.*)?$""", RegexOption.IGNORE_CASE)) // Raw image URLs
+                    && !trimmed.matches(Regex("""^[-*_]{3,}$""")) // Horizontal rules (---, ***, ___)
+                    && !trimmed.startsWith("|")           // Markdown table rows
         }
     }
 
@@ -359,23 +365,22 @@ fun UpdateBottomSheetContent(
                     .clip(RoundedCornerShape(24.dp))
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             ) {
-                coil.compose.AsyncImage(
-                    model = coil.request.ImageRequest.Builder(context)
-                        .data(currentGifUrl.trim())
-                        .crossfade(true)
-                        .build(),
-                    imageLoader = localImageLoader,
+                SpatialImage(
+                    model = currentGifUrl.trim(),
                     contentDescription = "Update Animation",
+                    size = ImageSemanticSize.Original,
+                    shape = RoundedCornerShape(24.dp),
+                    imageLoader = localImageLoader,
+                    contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .wrapContentHeight(),
                     onState = { state ->
                         isGifLoading = state !is coil.compose.AsyncImagePainter.State.Success
                         if (state is coil.compose.AsyncImagePainter.State.Error && currentGifUrl != DEFAULT_GIF_URL) {
                             currentGifUrl = DEFAULT_GIF_URL
                         }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .wrapContentHeight(),
-                    contentScale = androidx.compose.ui.layout.ContentScale.FillWidth
+                    }
                 )
 
                 if (isGifLoading) {
@@ -445,7 +450,7 @@ fun UpdateBottomSheetContent(
                 }
 
                 Icon(
-                    imageVector = Icons.Default.ArrowForward,
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(20.dp)
@@ -515,14 +520,19 @@ fun UpdateBottomSheetContent(
                                 changelogLines.forEach { line ->
                                     val trimmed = line.trim()
                                     val primaryColor = MaterialTheme.colorScheme.primary
-                                    if (trimmed.startsWith("Important:", ignoreCase = true) ||
-                                        trimmed.startsWith("Note:", ignoreCase = true) ||
-                                        trimmed.startsWith("Warning:", ignoreCase = true)) {
+                                    val isBlockquote = trimmed.startsWith(">")
+                                    val cleanText = if (isBlockquote) trimmed.removePrefix(">").trim() else trimmed
+                                    val isImportant = cleanText.startsWith("Important:", ignoreCase = true) ||
+                                            cleanText.startsWith("Note:", ignoreCase = true) ||
+                                            cleanText.startsWith("Warning:", ignoreCase = true) ||
+                                            isBlockquote
+
+                                    if (isImportant) {
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .padding(vertical = 4.dp)
-                                                .clip(RoundedCornerShape(4.dp))
+                                                .clip(RoundedCornerShape(8.dp))
                                                 .background(primaryColor.copy(alpha = 0.08f))
                                                 .drawWithContent {
                                                     drawContent()
@@ -536,13 +546,37 @@ fun UpdateBottomSheetContent(
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Text(
-                                                text = trimmed,
+                                                text = cleanText,
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSurface,
                                                 lineHeight = 20.sp
                                             )
                                         }
                                     } else {
+                                        val rawBullet = if (cleanText.startsWith("•") || cleanText.startsWith("-") || cleanText.startsWith("*")) {
+                                            cleanText.substring(1).trim()
+                                        } else {
+                                            cleanText
+                                        }
+
+                                        val annotatedBullet = buildAnnotatedString {
+                                            val parts = rawBullet.split("**")
+                                            parts.forEachIndexed { index, part ->
+                                                if (index % 2 == 1) {
+                                                    pushStyle(
+                                                        SpanStyle(
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = MaterialTheme.colorScheme.onSurface
+                                                        )
+                                                    )
+                                                    append(part)
+                                                    pop()
+                                                } else {
+                                                    append(part)
+                                                }
+                                            }
+                                        }
+
                                         Row(
                                             modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
                                             verticalAlignment = Alignment.Top
@@ -554,11 +588,7 @@ fun UpdateBottomSheetContent(
                                                 modifier = Modifier.padding(end = 8.dp)
                                             )
                                             Text(
-                                                text = if (trimmed.startsWith("•") || trimmed.startsWith("-") || trimmed.startsWith("*")) {
-                                                    trimmed.substring(1).trim()
-                                                } else {
-                                                    trimmed
-                                                },
+                                                text = annotatedBullet,
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 lineHeight = 20.sp,

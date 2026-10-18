@@ -2,6 +2,10 @@
 
 package com.codetrio.spatialflow.ui
 
+import coil.imageLoader
+import com.codetrio.spatialflow.ui.explore.ImageSemanticSize
+import com.codetrio.spatialflow.ui.explore.SpatialImage
+
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.RecoverableSecurityException
@@ -108,7 +112,7 @@ fun TagEditorScreenEntryPoint(
     ) { uri ->
         if (uri != null) {
             selectedImageUri = uri
-            com.codetrio.spatialflow.ui.SnackbarController.showMessage("Image selected")
+            SnackbarController.showMessage("Image selected")
         }
     }
 
@@ -129,7 +133,7 @@ fun TagEditorScreenEntryPoint(
                     onSecurityException = { _ ->
                         pendingSaveData = Pair(title, artist)
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            com.codetrio.spatialflow.ui.SnackbarController.showMessage("Please try saving again to grant permission")
+                            SnackbarController.showMessage("Please try saving again to grant permission")
                         }
                     }
                 )
@@ -163,7 +167,7 @@ fun TagEditorScreenEntryPoint(
                             intentSenderLauncher.launch(IntentSenderRequest.Builder(rse.userAction.actionIntent.intentSender).build())
                         }
                     } else {
-                        com.codetrio.spatialflow.ui.SnackbarController.showMessage("Storage permission required to edit metadata")
+                        SnackbarController.showMessage("Storage permission required to edit metadata")
                     }
                 }
             )
@@ -215,7 +219,7 @@ private fun saveTags(
                 androidx.localbroadcastmanager.content.LocalBroadcastManager.getInstance(context)
                     .sendBroadcast(intent)
 
-                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Tags updated successfully")
+                SnackbarController.showMessage("Tags updated successfully")
                 onNavigateUp()
             }
         } catch (e: SecurityException) {
@@ -224,7 +228,7 @@ private fun saveTags(
             }
         } catch (e: Exception) {
             withContext(Dispatchers.Main) {
-                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Failed to update: ${e.message}")
+                SnackbarController.showMessage("Failed to update: ${e.message}")
             }
         }
     }
@@ -302,12 +306,12 @@ private fun downloadCoverArt(context: Context, scope: kotlinx.coroutines.Corouti
                     }
                 }
                 withContext(Dispatchers.Main) {
-                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Saved art to Pictures folder!")
+                    SnackbarController.showMessage("Saved art to Pictures folder!")
                 }
             }
         } catch (e: Exception) {
             withContext(Dispatchers.Main) {
-                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Failed to save: ${e.message}")
+                SnackbarController.showMessage("Failed to save: ${e.message}")
             }
         }
     }
@@ -320,9 +324,9 @@ private fun ExpressiveButton(
     modifier: Modifier = Modifier,
     icon: ImageVector? = null,
     enabled: Boolean = true,
-    containerColor: Color = Color(0xFF292C34),
-    contentColor: Color = Color.White,
-    disabledContainerColor: Color = Color(0x33FFFFFF),
+    containerColor: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
+    disabledContainerColor: Color = MaterialTheme.colorScheme.surfaceContainerLow,
     height: Dp = 56.dp,
     fontSize: androidx.compose.ui.unit.TextUnit = 14.sp,
     fontWeight: FontWeight = FontWeight.Medium
@@ -387,7 +391,7 @@ private fun CoverArtCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1F22)),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         shape = RoundedCornerShape(28.dp)
     ) {
         Column(
@@ -398,38 +402,27 @@ private fun CoverArtCard(
         ) {
             Text(
                 text = "Cover Art",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onSurface,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold
             )
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(if (isLandscape) 120.dp else 160.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                )
-            } else {
-                Image(
-                    painter = painterResource(id = R.drawable.default_album_art),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .size(if (isLandscape) 120.dp else 160.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                )
-            }
+            SpatialImage(
+                model = bitmap ?: R.drawable.default_album_art,
+                contentDescription = null,
+                size = ImageSemanticSize.ThumbnailMedium,
+                shape = RoundedCornerShape(24.dp),
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(if (isLandscape) 120.dp else 160.dp)
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
                 text = "Select a square image and fine-tune it so your cover art looks great across the app.",
-                color = Color.White.copy(alpha = 0.7f),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center,
                 lineHeight = 18.sp,
@@ -477,7 +470,8 @@ private fun ActionButtonsRow(
             onClick = onCancel,
             text = "Cancel",
             modifier = Modifier.weight(1f),
-            containerColor = Color(0xFF2E313A),
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            contentColor = MaterialTheme.colorScheme.onSurface,
             height = 64.dp,
             fontSize = 16.sp
         )
@@ -486,9 +480,9 @@ private fun ActionButtonsRow(
             enabled = !isSaving && title.isNotEmpty(),
             text = if (isSaving) "Saving..." else "Save",
             modifier = Modifier.weight(1f),
-            containerColor = Color(0xFFC2D2FF),
-            contentColor = Color(0xFF131D33),
-            disabledContainerColor = Color(0x33FFFFFF),
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
             height = 64.dp,
             fontSize = 16.sp
         )
@@ -534,14 +528,22 @@ private fun TagEditorScreen(
                 val model = embedded ?: song.getAlbumArtUri()
                 if (model != null) {
                     try {
-                        val future = Glide.with(context)
-                            .asBitmap()
-                            .load(model)
-                            .submit()
-                        val bitmap = future.get()
-                        albumArtBitmap = bitmap
+                        val req = coil.request.ImageRequest.Builder(context)
+                            .data(model)
+                            .build()
+                        val res = context.imageLoader.execute(req)
+                        albumArtBitmap = (res.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
                     } catch (_: Exception) {
-                        // fallback
+                        try {
+                            val future = Glide.with(context)
+                                .asBitmap()
+                                .load(model)
+                                .submit()
+                            val bitmap = future.get()
+                            albumArtBitmap = bitmap
+                        } catch (_: Exception) {
+                            // fallback
+                        }
                     }
                 }
             }
@@ -554,7 +556,7 @@ private fun TagEditorScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
-                    .padding(start = 88.dp, end = 24.dp, top = 16.dp, bottom = 16.dp),
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(24.dp)
             ) {
                 Column(
@@ -577,7 +579,7 @@ private fun TagEditorScreen(
                     Text(
                         text = "Edit Details",
                         style = MaterialTheme.typography.headlineSmall,
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(16.dp))
@@ -618,7 +620,7 @@ private fun TagEditorScreen(
                     Text(
                         text = "Edit Song",
                         style = MaterialTheme.typography.headlineMedium,
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onSurface,
                         fontWeight = FontWeight.Bold,
                         fontSize = 34.sp
                     )
@@ -672,7 +674,7 @@ private fun CustomInputField(
     ) {
         Text(
             text = label,
-            color = Color.White.copy(alpha = 0.8f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 16.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
@@ -686,19 +688,21 @@ private fun CustomInputField(
                 .height(64.dp)
                 .clip(RoundedCornerShape(20.dp)),
             colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color(0xFF1E1F22),
-                unfocusedContainerColor = Color(0xFF1E1F22),
-                disabledContainerColor = Color(0xFF1E1F22),
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
                 focusedIndicatorColor = Color.Transparent,
                 unfocusedIndicatorColor = Color.Transparent,
                 disabledIndicatorColor = Color.Transparent,
-                cursorColor = Color.White
+                cursorColor = MaterialTheme.colorScheme.primary,
+                focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                unfocusedTextColor = MaterialTheme.colorScheme.onSurface
             ),
             leadingIcon = {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(24.dp)
                 )
             }

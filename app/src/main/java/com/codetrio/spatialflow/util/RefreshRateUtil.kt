@@ -31,7 +31,7 @@ private fun applyRefreshRate(
 ) {
     // For Android 15 (Vanilla Ice Cream) and above
     if (Build.VERSION.SDK_INT >= 35) {
-        view.setRequestedFrameRate(requestedFps)
+        view.requestedFrameRate = requestedFps
         return
     }
 

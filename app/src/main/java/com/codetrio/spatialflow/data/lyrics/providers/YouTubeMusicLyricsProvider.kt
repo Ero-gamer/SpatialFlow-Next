@@ -22,7 +22,7 @@ class YouTubeMusicLyricsProvider : LyricsProvider {
 
     override fun getName(): String = "YouTube Music"
 
-    override fun getPriority(): Int = 1 // Highest priority — direct source
+    override fun getPriority(): Int = 15 // Plain lyrics fallback source
 
     override fun search(track: TrackMetadata): LyricsResult? {
         val videoId = track.videoId

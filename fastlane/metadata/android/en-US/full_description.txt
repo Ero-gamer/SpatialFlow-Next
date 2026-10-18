@@ -1,0 +1,10 @@
+SpatialFlow is a modern, privacy-focused audio player crafted for Android using Jetpack Compose and Material 3 Expressive design. Seamlessly explore, stream, and manage your local music collection and online music catalogs in one unified, fluid experience.
+
+Key Features:
+
+* Hybrid Playback: Play your offline music library (FLAC, MP3, AAC, and more) or stream high-quality audio seamlessly.
+* Material 3 Expressive UI: Adaptive dynamic theming, smooth spring animations, liquid glass cards, and immersive full-screen player interfaces.
+* Advanced Audio Engine: Built on AndroidX Media3 (ExoPlayer) featuring real-time LUFS volume normalization, smooth crossfades, and gapless playback.
+* Audio Customization: 5-band equalizer, bass boost, and custom reverb presets.
+* Synchronized Lyrics: Syllable-level and word-by-word karaoke lyrics powered by multi-source synchronization.
+* Pure & Private: Free and open-source without ads, third-party analytics, or background tracking.

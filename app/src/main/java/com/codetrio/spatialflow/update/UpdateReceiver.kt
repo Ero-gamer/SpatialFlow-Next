@@ -53,15 +53,6 @@ class UpdateReceiver : BroadcastReceiver() {
     }
 
     private fun installApk(context: Context, apkFile: File) {
-        // Check install permission for Android 8+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            if (!context.packageManager.canRequestPackageInstalls()) {
-                Log.e(TAG, "Cannot request package installs permission")
-                // Need to request permission first, but can't do from BroadcastReceiver
-                return
-            }
-        }
-
         try {
             val apkUri: Uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 FileProvider.getUriForFile(
@@ -78,9 +69,60 @@ class UpdateReceiver : BroadcastReceiver() {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) // CRITICAL
             }
+
+            // Check install permission for Android 8+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (!context.packageManager.canRequestPackageInstalls()) {
+                    Log.w(TAG, "Cannot request package installs permission directly; posting install notification")
+                    showInstallNotification(context, installIntent)
+                    return
+                }
+            }
+
             context.startActivity(installIntent)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to install APK", e)
+            Log.e(TAG, "Failed to install APK directly", e)
+        }
+    }
+
+    private fun showInstallNotification(context: Context, installIntent: Intent) {
+        try {
+            val pendingIntent = android.app.PendingIntent.getActivity(
+                context,
+                1001,
+                installIntent,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                } else {
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                }
+            )
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    "spatialflow_updates",
+                    "App Updates",
+                    android.app.NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Notifies when an app update is ready to install"
+                }
+                val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                manager.createNotificationChannel(channel)
+            }
+
+            val builder = androidx.core.app.NotificationCompat.Builder(context, "spatialflow_updates")
+                .setSmallIcon(com.codetrio.spatialflow.R.drawable.ic_applogo)
+                .setContentTitle("Update Downloaded")
+                .setContentText("Tap to install the latest version of SpatialFlow.")
+                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setShowWhen(true)
+
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            manager.notify(998, builder.build())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to post install notification", e)
         }
     }
 }

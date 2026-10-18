@@ -1,6 +1,10 @@
 package com.codetrio.spatialflow.ui.player
 
 import android.annotation.SuppressLint
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -12,6 +16,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
@@ -62,14 +67,22 @@ fun WavyMusicSlider(
     thumbLineHeightWhenInteracting: Dp = 20.dp,
     isWaveEligible: Boolean = true,
     semanticsLabel: String? = null,
-    semanticsProgressStep: Float = 0.01f
+    semanticsProgressStep: Float = 0.01f,
+    transitionWindow: com.codetrio.spatialflow.service.automix.AutoMixTransitionWindow? = null,
+    mixing: Boolean = false
 ) {
     val isDragged by interactionSource.collectIsDraggedAsState()
     val isPressed by interactionSource.collectIsPressedAsState()
     val isInteracting = isDragged || isPressed
 
+    val fillFactor by animateFloatAsState(
+        targetValue = if (mixing) 0f else 1f,
+        animationSpec = tween(450, easing = FastOutSlowInEasing),
+        label = "WavyFillFactor"
+    )
+
     val thumbInteractionFraction by animateFloatAsState(
-        targetValue = if (isInteracting) 1f else 0f,
+        targetValue = if (isInteracting && !mixing) 1f else 0f,
         animationSpec = tween(250, easing = FastOutSlowInEasing),
         label = "ThumbInteractionAnim"
     )
@@ -84,7 +97,6 @@ fun WavyMusicSlider(
 
     // Infinitely shifting phase when active
     val phaseShiftAnim = remember { Animatable(0f) }
-    val phaseShift = phaseShiftAnim.value
 
 
 
@@ -115,6 +127,9 @@ fun WavyMusicSlider(
 
     val sliderVisualHeight = remember(trackHeight, thumbRadius, thumbLineHeightWhenInteracting) {
         max(trackHeight * 2, max(thumbRadius * 2, thumbLineHeightWhenInteracting) + 8.dp)
+    }
+    val activeGradientColors = remember(activeTrackColor) {
+        listOf(activeTrackColor.copy(alpha = 0.35f), activeTrackColor)
     }
 
     val hapticFeedback = LocalHapticFeedback.current
@@ -212,7 +227,8 @@ fun WavyMusicSlider(
                     val taperDistancePx = 64.dp.toPx()
 
                     onDrawWithContent {
-                        val currentProgressPxEndVisual = localTrackStart + localTrackWidth * renderNormalizedValue
+                        val effectiveNormProgress = (renderNormalizedValue * fillFactor).coerceIn(0f, 1f)
+                        val currentProgressPxEndVisual = localTrackStart + localTrackWidth * effectiveNormProgress
                         
                         // 1. Draw Inactive Track
                         if (hideInactiveTrackPortion) {
@@ -235,15 +251,27 @@ fun WavyMusicSlider(
                             )
                         }
 
+                        // 1b. AutoMix Transition Window Marker
+                        if (transitionWindow != null) {
+                            val winStartPx = (localTrackStart + localTrackWidth * transitionWindow.startFraction).coerceIn(localTrackStart, localTrackEnd)
+                            val winEndPx = (localTrackStart + localTrackWidth * transitionWindow.endFraction).coerceIn(winStartPx, localTrackEnd)
+                            if (winEndPx > winStartPx) {
+                                drawLine(
+                                    color = activeTrackColor.copy(alpha = 0.40f),
+                                    start = Offset(winStartPx, localCenterY),
+                                    end = Offset(winEndPx, localCenterY),
+                                    strokeWidth = trackHeightPx * 1.5f,
+                                    cap = StrokeCap.Round
+                                )
+                            }
+                        }
+
                         // 2. Draw Active Track (Sinusoidal Wave / Line) with Spatial Gradient
-                        if (renderNormalizedValue > 0f) {
+                        if (effectiveNormProgress > 0.001f) {
                             val activeTrackVisualEnd = currentProgressPxEndVisual - (thumbGapPx * thumbInteractionFraction)
 
                             val activeGradient = Brush.linearGradient(
-                                colors = listOf(
-                                    activeTrackColor.copy(alpha = 0.35f),
-                                    activeTrackColor
-                                ),
+                                colors = activeGradientColors,
                                 start = Offset(localTrackStart, localCenterY),
                                 end = Offset(activeTrackVisualEnd.coerceAtLeast(localTrackStart), localCenterY)
                             )
@@ -253,42 +281,27 @@ fun WavyMusicSlider(
                                 val waveStartDrawX = localTrackStart
                                 val waveEndDrawX = activeTrackVisualEnd.coerceAtLeast(waveStartDrawX)
                                 if (waveEndDrawX > waveStartDrawX) {
+                                    val phaseShift = phaseShiftAnim.value
                                     val periodPx = ((2 * PI) / waveFrequency).toFloat()
-                                    val samplesPerCycle = 20f
+                                    val samplesPerCycle = 10f
                                     val waveStep = (periodPx / samplesPerCycle)
-                                        .coerceAtLeast(1.2f)
-                                        .coerceAtMost(trackHeightPx)
+                                        .coerceAtLeast(4.0f)
 
                                     fun yAt(x: Float): Float {
                                         val s = sin(waveFrequency * x + phaseShift)
-                                        val breath = 1f
-                                        // Taper active wave smoothly from the very start of the track
                                         val taper = ((x - waveStartDrawX) / taperDistancePx).coerceIn(0f, 1f)
-                                        val finalAmplitude = waveAmplitudePxInternal * breath * taper
-
-                                        return (localCenterY + finalAmplitude * s)
-                                            .coerceIn(
-                                                localCenterY - finalAmplitude - trackHeightPx / 2f,
-                                                localCenterY + finalAmplitude + trackHeightPx / 2f
-                                            )
+                                        val finalAmplitude = waveAmplitudePxInternal * taper
+                                        return localCenterY + finalAmplitude * s
                                     }
 
-                                    var prevX = waveStartDrawX
-                                    var prevY = yAt(prevX)
-                                    wavePath.moveTo(prevX, prevY)
+                                    wavePath.moveTo(waveStartDrawX, yAt(waveStartDrawX))
 
-                                    var x = prevX + waveStep
+                                    var x = waveStartDrawX + waveStep
                                     while (x < waveEndDrawX) {
-                                        val y = yAt(x)
-                                        val mX = (prevX + x) * 0.5f
-                                        val mY = (prevY + y) * 0.5f
-                                        wavePath.quadraticTo(prevX, prevY, mX, mY)
-                                        prevX = x
-                                        prevY = y
+                                        wavePath.lineTo(x, yAt(x))
                                         x += waveStep
                                     }
-                                    val endY = yAt(waveEndDrawX)
-                                    wavePath.quadraticTo(prevX, prevY, waveEndDrawX, endY)
+                                    wavePath.lineTo(waveEndDrawX, yAt(waveEndDrawX))
 
                                     drawPath(
                                         path = wavePath,
@@ -315,26 +328,82 @@ fun WavyMusicSlider(
                         }
 
                         // 3. Draw Sleek Hollow Halo Ring / Capsule-morphing Thumb
-                        val currentThumbCenterX = localTrackStart + localTrackWidth * renderNormalizedValue
-                        
-                        fun fastLerp(start: Float, stop: Float, fraction: Float): Float {
-                            return start + (stop - start) * fraction
+                        if (fillFactor > 0.01f) {
+                            val currentThumbCenterX = localTrackStart + localTrackWidth * renderNormalizedValue
+                            
+                            fun fastLerp(start: Float, stop: Float, fraction: Float): Float {
+                                return start + (stop - start) * fraction
+                            }
+
+                            val thumbCurrentWidthPx = fastLerp(thumbRadiusPx * 2f, trackHeightPx * 1.2f, thumbInteractionFraction) * fillFactor
+                            val thumbCurrentHeightPx = fastLerp(thumbRadiusPx * 2f, thumbLineHeightPxInternal, thumbInteractionFraction) * fillFactor
+
+                            drawRoundRect(
+                                color = thumbColor,
+                                topLeft = Offset(
+                                    currentThumbCenterX - thumbCurrentWidthPx / 2f,
+                                    localCenterY - thumbCurrentHeightPx / 2f
+                                ),
+                                size = Size(thumbCurrentWidthPx, thumbCurrentHeightPx),
+                                cornerRadius = CornerRadius(thumbCurrentWidthPx / 2f)
+                            )
                         }
-
-                        val thumbCurrentWidthPx = fastLerp(thumbRadiusPx * 2f, trackHeightPx * 1.2f, thumbInteractionFraction)
-                        val thumbCurrentHeightPx = fastLerp(thumbRadiusPx * 2f, thumbLineHeightPxInternal, thumbInteractionFraction)
-
-                        drawRoundRect(
-                            color = thumbColor,
-                            topLeft = Offset(
-                                currentThumbCenterX - thumbCurrentWidthPx / 2f,
-                                localCenterY - thumbCurrentHeightPx / 2f
-                            ),
-                            size = Size(thumbCurrentWidthPx, thumbCurrentHeightPx),
-                            cornerRadius = CornerRadius(thumbCurrentWidthPx / 2f)
-                        )
                     }
                 }
+        )
+
+        AnimatedVisibility(
+            visible = mixing,
+            enter = fadeIn(tween(durationMillis = 450, easing = FastOutSlowInEasing)) +
+                scaleIn(
+                    animationSpec = tween(durationMillis = 450, easing = FastOutSlowInEasing),
+                    initialScale = 0f,
+                    transformOrigin = TransformOrigin(0f, 0.5f),
+                ),
+            exit = fadeOut(tween(durationMillis = 450, easing = FastOutSlowInEasing)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.Center)
+        ) {
+            WavyMixSheen(
+                trackHeight = trackHeight,
+                color = activeTrackColor
+            )
+        }
+    }
+}
+
+@Composable
+private fun WavyMixSheen(trackHeight: Dp, color: Color) {
+    val transition = rememberInfiniteTransition(label = "wavyMixSheen")
+    val phase by transition.animateFloat(
+        initialValue = -0.34f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "wavyMixSheenPhase",
+    )
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(trackHeight)
+    ) {
+        val band = size.width * 0.34f
+        val x = phase * size.width
+        drawRoundRect(
+            brush = Brush.horizontalGradient(
+                colorStops = arrayOf(
+                    0f to Color.Transparent,
+                    0.5f to color,
+                    1f to Color.Transparent,
+                ),
+                startX = x,
+                endX = x + band,
+            ),
+            size = Size(size.width, size.height),
+            cornerRadius = CornerRadius(size.height / 2f),
         )
     }
 }

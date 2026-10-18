@@ -2,6 +2,10 @@
 
 package com.codetrio.spatialflow.ui
 
+import coil.imageLoader
+import com.codetrio.spatialflow.ui.explore.ImageSemanticSize
+import com.codetrio.spatialflow.ui.explore.SpatialImage
+
 import android.annotation.SuppressLint
 import android.content.res.Configuration
 import android.os.Build
@@ -45,6 +49,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.codetrio.spatialflow.ui.theme.SpatialShapes
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -82,6 +87,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -104,7 +110,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.bumptech.glide.Glide
 import com.codetrio.spatialflow.R
 import com.codetrio.spatialflow.model.SongItem
-import com.codetrio.spatialflow.ui.theme.GoogleSansFlex
 import com.codetrio.spatialflow.ui.theme.SpatialFlowTheme
 import com.codetrio.spatialflow.viewmodel.PlayerSharedViewModel
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
@@ -192,9 +197,22 @@ fun BottomSheetScaffoldContent(
     var albumArtBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
 
     val localPlaylists by viewModel.localPlaylistsFlow.collectAsStateWithLifecycle(emptyList())
+    var onlinePlaylists by remember { mutableStateOf<List<com.codetrio.spatialflow.data.innertube.OnlinePlaylist>>(emptyList()) }
+    val isLoggedIn = remember(context) { com.codetrio.spatialflow.data.innertube.AccountManager.isLoggedIn(context) }
 
     var showAddToPlaylistDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var createIsOnline by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isLoggedIn, showAddToPlaylistDialog) {
+        if (isLoggedIn && showAddToPlaylistDialog) {
+            withContext(Dispatchers.IO) {
+                com.codetrio.spatialflow.data.innertube.YouTubeMusic.libraryPlaylists().onSuccess { playlists ->
+                    onlinePlaylists = playlists
+                }
+            }
+        }
+    }
 
     LaunchedEffect(song) {
         if (song != null) {
@@ -203,23 +221,52 @@ fun BottomSheetScaffoldContent(
                 val model = embedded ?: song.getAlbumArtUri()
                 if (model != null) {
                     try {
-                        albumArtBitmap = Glide.with(context).asBitmap().load(model).override(256).submit().get()
-                    } catch (_: Exception) { /* Fallback */ }
+                        val req = coil.request.ImageRequest.Builder(context)
+                            .data(model)
+                            .size(256, 256)
+                            .build()
+                        val res = context.imageLoader.execute(req)
+                        albumArtBitmap = (res.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
+                    } catch (_: Exception) {
+                        try {
+                            albumArtBitmap = Glide.with(context).asBitmap().load(model).override(256).submit().get()
+                        } catch (_: Exception) { /* Fallback */ }
+                    }
                 }
             }
         }
     }
 
     if (showAddToPlaylistDialog) {
-        LocalPlaylistPickerDialog(
-            playlists = localPlaylists,
-            onCreateNew = {
+        com.codetrio.spatialflow.ui.dialogs.AddToPlaylistDialog(
+            song = song,
+            localPlaylists = localPlaylists,
+            onlinePlaylists = onlinePlaylists,
+            isLoggedIn = isLoggedIn,
+            onCreateNewLocal = {
+                createIsOnline = false
                 showCreatePlaylistDialog = true
                 showAddToPlaylistDialog = false
             },
-            onPlaylistSelected = { playlist ->
+            onCreateNewOnline = {
+                createIsOnline = true
+                showCreatePlaylistDialog = true
+                showAddToPlaylistDialog = false
+            },
+            onSelectLocalPlaylist = { playlist ->
                 if (song != null) {
                     viewModel.addSongToLocalPlaylist(playlist.id, song)
+                    android.widget.Toast.makeText(context, "Added to '${playlist.title}'", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                showAddToPlaylistDialog = false
+                onDismiss()
+            },
+            onSelectOnlinePlaylist = { onlinePlaylist ->
+                if (song != null) {
+                    android.widget.Toast.makeText(context, "Adding to YouTube Music...", android.widget.Toast.LENGTH_SHORT).show()
+                    viewModel.addSongToYouTubePlaylist(onlinePlaylist.playlistId, song) { success, msg ->
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                    }
                 }
                 showAddToPlaylistDialog = false
                 onDismiss()
@@ -229,9 +276,22 @@ fun BottomSheetScaffoldContent(
     }
 
     if (showCreatePlaylistDialog) {
-        CreateLocalPlaylistDialog(
+        com.codetrio.spatialflow.ui.dialogs.CreatePlaylistDialog(
+            isOnline = createIsOnline,
             onConfirm = { name ->
-                viewModel.createLocalPlaylist(name)
+                if (!createIsOnline) {
+                    viewModel.createLocalPlaylist(name)
+                    android.widget.Toast.makeText(context, "Created local playlist '$name'", android.widget.Toast.LENGTH_SHORT).show()
+                } else {
+                    android.widget.Toast.makeText(context, "Creating YouTube Music playlist...", android.widget.Toast.LENGTH_SHORT).show()
+                    viewModel.createYouTubePlaylist(name, song) { success, playlistId ->
+                        if (success) {
+                            android.widget.Toast.makeText(context, "Created YouTube playlist '$name'", android.widget.Toast.LENGTH_SHORT).show()
+                        } else {
+                            android.widget.Toast.makeText(context, "Failed to create YouTube playlist", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
                 showCreatePlaylistDialog = false
                 showAddToPlaylistDialog = true
             },
@@ -252,7 +312,7 @@ fun BottomSheetScaffoldContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 12.dp, bottom = 16.dp)
-                .then(if (isLandscape) Modifier.padding(start = 88.dp, end = 20.dp) else Modifier.padding(horizontal = 20.dp)),
+                .padding(horizontal = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Expressive Handle
@@ -403,7 +463,7 @@ fun DestructiveActionRow(
         ) {
             Icon(Icons.Default.PlaylistAdd, null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
             Spacer(Modifier.width(8.dp))
-            Text("Add to Playlist", style = MaterialTheme.typography.labelLarge, fontFamily = GoogleSansFlex, color = MaterialTheme.colorScheme.onSecondaryContainer)
+            Text("Add to Playlist", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSecondaryContainer)
         }
 
         // Delete Button
@@ -422,144 +482,9 @@ fun DestructiveActionRow(
         ) {
             Icon(Icons.Filled.DeleteOutline, null, tint = MaterialTheme.colorScheme.onErrorContainer)
             Spacer(Modifier.width(8.dp))
-            Text("Delete", style = MaterialTheme.typography.labelLarge, fontFamily = GoogleSansFlex, color = MaterialTheme.colorScheme.onErrorContainer)
+            Text("Delete", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onErrorContainer)
         }
     }
-}
-
-@Composable
-fun LocalPlaylistPickerDialog(
-    playlists: List<com.codetrio.spatialflow.data.db.PlaylistEntity>,
-    onCreateNew: () -> Unit,
-    onPlaylistSelected: (com.codetrio.spatialflow.data.db.PlaylistEntity) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                "Add to Playlist",
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleLarge
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 300.dp)
-            ) {
-                // Button to create new playlist
-                Button(
-                    onClick = onCreateNew,
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)
-                ) {
-                    Icon(Icons.Default.Add, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Create New Playlist")
-                }
-
-                if (playlists.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(vertical = 24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            "No playlists yet",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(playlists) { playlist ->
-                            Surface(
-                                onClick = { onPlaylistSelected(playlist) },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.PlaylistPlay,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                    Spacer(Modifier.width(16.dp))
-                                    Text(
-                                        playlist.title,
-                                        fontWeight = FontWeight.SemiBold,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
-
-@Composable
-fun CreateLocalPlaylistDialog(
-    onConfirm: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var name by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                "New Playlist",
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.titleLarge
-            )
-        },
-        text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Playlist Name") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (name.isNotBlank()) {
-                        onConfirm(name)
-                    }
-                },
-                enabled = name.isNotBlank()
-            ) {
-                Text("Create")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
 }
 
 @Composable
@@ -572,19 +497,17 @@ fun HeaderSection(
     if (!isLandscape) {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Surface(
-                shape = MaterialTheme.shapes.large,
+                shape = SpatialShapes.MediumLarge,
                 color = MaterialTheme.colorScheme.surfaceVariant
             ) {
-                if (bitmap != null) {
-                    Image(bitmap.asImageBitmap(), null, Modifier.size(84.dp), contentScale = ContentScale.Crop)
-                } else {
-                    Image(
-                        painter = painterResource(id = R.drawable.default_album_art),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.size(84.dp)
-                    )
-                }
+                SpatialImage(
+                    model = bitmap ?: R.drawable.default_album_art,
+                    contentDescription = null,
+                    size = ImageSemanticSize.ThumbnailSmall,
+                    shape = SpatialShapes.MediumLarge,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(84.dp)
+                )
             }
             
             Spacer(Modifier.width(16.dp))
@@ -593,24 +516,31 @@ fun HeaderSection(
                 Text(
                     song?.title ?: "Unknown",
                     style = MaterialTheme.typography.headlineSmall,
-                    fontFamily = GoogleSansFlex,
-                    fontWeight = FontWeight.ExtraBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     song?.artist ?: "Unknown Artist",
                     style = MaterialTheme.typography.bodyMedium,
-                    fontFamily = GoogleSansFlex,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            IconButton(
-                onClick = onEdit,
-                modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+            Box(
+                modifier = Modifier
+                    .height(48.dp)
+                    .width(36.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { onEdit() },
+                contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Filled.Edit, null)
+                Icon(
+                    imageVector = Icons.Filled.Edit,
+                    contentDescription = "Edit",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
     } else {
@@ -620,20 +550,18 @@ fun HeaderSection(
         ) {
             Box(contentAlignment = Alignment.BottomEnd) {
                 Surface(
-                    shape = RoundedCornerShape(16.dp),
+                    shape = SpatialShapes.MediumLarge,
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     tonalElevation = 2.dp
                 ) {
-                    if (bitmap != null) {
-                        Image(bitmap.asImageBitmap(), null, Modifier.size(112.dp), contentScale = ContentScale.Crop)
-                    } else {
-                        Image(
-                            painter = painterResource(id = R.drawable.default_album_art),
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(112.dp)
-                        )
-                    }
+                    SpatialImage(
+                        model = bitmap ?: R.drawable.default_album_art,
+                        contentDescription = null,
+                        size = ImageSemanticSize.ThumbnailMedium,
+                        shape = SpatialShapes.MediumLarge,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(112.dp)
+                    )
                 }
                 
                 IconButton(
@@ -657,8 +585,6 @@ fun HeaderSection(
             Text(
                 song?.title ?: "Unknown",
                 style = MaterialTheme.typography.titleMedium,
-                fontFamily = GoogleSansFlex,
-                fontWeight = FontWeight.ExtraBold,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -667,7 +593,6 @@ fun HeaderSection(
             Text(
                 song?.artist ?: "Unknown Artist",
                 style = MaterialTheme.typography.bodySmall,
-                fontFamily = GoogleSansFlex,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
@@ -686,6 +611,7 @@ fun ActionButtonRow1(
     actionListener: SongActionsBottomSheet.ActionListener?,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     var favLocal by remember { mutableStateOf(isFavorite) }
 
     val playInteraction = remember { MutableInteractionSource() }
@@ -695,6 +621,11 @@ fun ActionButtonRow1(
     val playPressed by playInteraction.collectIsPressedAsState()
     val favPressed by favInteraction.collectIsPressedAsState()
     val sharePressed by shareInteraction.collectIsPressedAsState()
+
+    var showShareSheet by remember { mutableStateOf(false) }
+    val onShareClick = {
+        showShareSheet = true
+    }
 
     val playWeight by animateFloatAsState(
         targetValue = if (playPressed) 1.5f else 1f,
@@ -713,7 +644,7 @@ fun ActionButtonRow1(
         modifier = Modifier
             .fillMaxWidth()
             .height(96.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
     ) {
         ToggleButton(
             checked = playPressed,
@@ -735,7 +666,7 @@ fun ActionButtonRow1(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Filled.PlayArrow, null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.onPrimaryContainer)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Play", color = MaterialTheme.colorScheme.onPrimaryContainer, fontSize = 20.sp, fontWeight = FontWeight.Medium, fontFamily = GoogleSansFlex)
+                Text("Play", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
             }
         }
 
@@ -744,7 +675,15 @@ fun ActionButtonRow1(
             onCheckedChange = {
                 favLocal = it
                 onFavoriteChange(it)
-                song?.let { actionListener?.onFavorite(it, favLocal) }
+                song?.let { s ->
+                    actionListener?.onFavorite(s, favLocal)
+                    if (favLocal) {
+                        val prefs = context.getSharedPreferences("AppSettings", android.content.Context.MODE_PRIVATE)
+                        if (prefs.getBoolean("auto_download_favorites", false)) {
+                            com.codetrio.spatialflow.util.SongDownloader.downloadSong(context, s)
+                        }
+                    }
+                }
             },
             interactionSource = favInteraction,
             modifier = Modifier
@@ -754,20 +693,20 @@ fun ActionButtonRow1(
             shapes = ButtonGroupDefaults.connectedMiddleButtonShapes(),
             colors = ToggleButtonDefaults.toggleButtonColors(
                 containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                checkedContentColor = Color(0xFFE91E63)
+                checkedContentColor = MaterialTheme.colorScheme.tertiary
             )
         ) {
             Icon(
                 imageVector = if (favLocal) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                 contentDescription = null,
-                tint = if (favLocal) Color(0xFFE91E63) else MaterialTheme.colorScheme.onSecondaryContainer,
+                tint = if (favLocal) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSecondaryContainer,
                 modifier = Modifier.size(32.dp)
             )
         }
 
         ToggleButton(
             checked = sharePressed,
-            onCheckedChange = { song?.let { actionListener?.onShare(it) } },
+            onCheckedChange = { onShareClick() },
             interactionSource = shareInteraction,
             modifier = Modifier
                 .weight(shareWeight)
@@ -782,6 +721,13 @@ fun ActionButtonRow1(
             Icon(Icons.Filled.Share, null, modifier = Modifier.size(32.dp), tint = MaterialTheme.colorScheme.onTertiaryContainer)
         }
     }
+
+    if (showShareSheet && song != null) {
+        com.codetrio.spatialflow.ui.player.SongShareBottomSheet(
+            song = song,
+            onDismiss = { showShareSheet = false }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
@@ -794,7 +740,7 @@ fun ActionButtonRow2(
     val context = LocalContext.current
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
     ) {
         val queueInteraction = remember { MutableInteractionSource() }
         val queuePressed by queueInteraction.collectIsPressedAsState()
@@ -835,10 +781,8 @@ fun ActionButtonRow2(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = "Queue",
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    fontFamily = GoogleSansFlex
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer
                 )
             }
         }
@@ -882,10 +826,8 @@ fun ActionButtonRow2(
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = "Next",
-                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    fontFamily = GoogleSansFlex
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer
                 )
             }
         }
@@ -896,17 +838,22 @@ fun ActionButtonRow2(
             targetValue = if (downloadPressed) 1.4f else 1f,
             animationSpec = spring(dampingRatio = 0.7f, stiffness = 400f)
         )
-        val isOnline = song?.videoId != null
+        val isDownloaded = remember(song) { song?.let { com.codetrio.spatialflow.util.SongDownloader.isSongDownloaded(context, it) } ?: false }
+        val isOnline = song?.videoId != null && !isDownloaded
 
         ToggleButton(
-            checked = downloadPressed,
+            checked = downloadPressed || isDownloaded,
             onCheckedChange = {
-                if (isOnline) {
-                    com.codetrio.spatialflow.util.SongDownloader.downloadSong(context, song)
+                if (song != null) {
+                    if (isDownloaded) {
+                        com.codetrio.spatialflow.util.SongDownloader.deleteDownloadedSong(context, song)
+                    } else if (isOnline) {
+                        com.codetrio.spatialflow.util.SongDownloader.downloadSong(context, song)
+                    }
                     onDismiss()
                 }
             },
-            enabled = isOnline,
+            enabled = song != null && (isOnline || isDownloaded),
             interactionSource = downloadInteraction,
             modifier = Modifier
                 .weight(downloadWeight)
@@ -914,10 +861,10 @@ fun ActionButtonRow2(
                 .zIndex(if (downloadPressed) 1f else 0f),
             shapes = ButtonGroupDefaults.connectedTrailingButtonShapes(),
             colors = ToggleButtonDefaults.toggleButtonColors(
-                containerColor = if (isOnline) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                contentColor = if (isOnline) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                checkedContainerColor = MaterialTheme.colorScheme.primary,
-                checkedContentColor = MaterialTheme.colorScheme.onPrimary
+                containerColor = if (isDownloaded) MaterialTheme.colorScheme.primaryContainer else if (isOnline) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = if (isDownloaded || isOnline) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                checkedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                checkedContentColor = MaterialTheme.colorScheme.onPrimaryContainer
             ),
             contentPadding = PaddingValues(0.dp)
         ) {
@@ -926,16 +873,14 @@ fun ActionButtonRow2(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    imageVector = if (isOnline) Icons.Default.Download else Icons.Default.Check,
+                    imageVector = if (isDownloaded) Icons.Default.Check else Icons.Default.Download,
                     contentDescription = null,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = if (isOnline) "Download" else "Offline",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    fontFamily = GoogleSansFlex
+                    text = if (isDownloaded) "Downloaded" else if (isOnline) "Download" else "Offline",
+                    style = MaterialTheme.typography.labelLarge
                 )
             }
         }
@@ -955,7 +900,7 @@ fun ExpressiveTabSwitcher(selectedTab: BottomSheetTab, onTabSelected: (BottomShe
         modifier = Modifier
             .width(320.dp)
             .height(56.dp)
-            .clip(RoundedCornerShape(28.dp))
+            .clip(SpatialShapes.Pill)
             .background(MaterialTheme.colorScheme.surfaceVariant)
     ) {
         Box(
@@ -964,7 +909,7 @@ fun ExpressiveTabSwitcher(selectedTab: BottomSheetTab, onTabSelected: (BottomShe
                 .width(160.dp)
                 .fillMaxHeight()
                 .padding(4.dp)
-                .clip(RoundedCornerShape(24.dp))
+                .clip(SpatialShapes.Pill)
                 .background(MaterialTheme.colorScheme.primary)
         )
 
@@ -986,10 +931,8 @@ fun ExpressiveTabSwitcher(selectedTab: BottomSheetTab, onTabSelected: (BottomShe
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "OPTIONS",
-                        color = if (selectedTab == BottomSheetTab.OPTIONS) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = GoogleSansFlex
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (selectedTab == BottomSheetTab.OPTIONS) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -1011,10 +954,8 @@ fun ExpressiveTabSwitcher(selectedTab: BottomSheetTab, onTabSelected: (BottomShe
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "INFO",
-                        color = if (selectedTab == BottomSheetTab.INFO) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = GoogleSansFlex
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (selectedTab == BottomSheetTab.INFO) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -1071,26 +1012,22 @@ fun InfoRow(
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(24.dp)
         )
-        Spacer(modifier = Modifier.width(16.dp))
+        Spacer(Modifier.width(16.dp))
         Column(
             modifier = Modifier.weight(1f)
         ) {
             Text(
                 text = label,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                fontFamily = GoogleSansFlex
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = value,
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Normal,
                 maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                fontFamily = GoogleSansFlex
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

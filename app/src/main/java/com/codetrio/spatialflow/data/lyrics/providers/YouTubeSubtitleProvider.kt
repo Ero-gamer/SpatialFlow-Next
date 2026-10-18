@@ -17,7 +17,7 @@ class YouTubeSubtitleProvider : LyricsProvider {
     }
 
     override fun getName(): String = "YouTube Subtitle"
-    override fun getPriority(): Int = 8
+    override fun getPriority(): Int = 9
 
     override fun search(track: TrackMetadata): LyricsResult? {
         val title = track.cleanedTitle

@@ -3,17 +3,21 @@
 package com.codetrio.spatialflow.ui.explore
  
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,16 +29,20 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import com.codetrio.spatialflow.ui.theme.concentricInner
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
@@ -53,21 +61,30 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material.icons.filled.ThumbUpOffAlt
 import androidx.compose.material.icons.rounded.BookmarkBorder
+import androidx.compose.material.icons.rounded.Equalizer
+import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Whatshot
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ButtonGroup
+import androidx.compose.material3.ButtonGroupDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.ListItemShapes
-import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -84,6 +101,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -92,13 +110,16 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asAndroidPath
 import androidx.compose.ui.graphics.asComposePath
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
+import com.codetrio.spatialflow.ui.theme.SpatialShapes
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -110,8 +131,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.graphics.shapes.Morph
 import androidx.graphics.shapes.toPath
-import coil.compose.AsyncImage
-import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.codetrio.spatialflow.data.innertube.HomeSection
 import com.codetrio.spatialflow.data.innertube.OnlineAlbum
@@ -119,8 +138,11 @@ import com.codetrio.spatialflow.data.innertube.OnlineArtist
 import com.codetrio.spatialflow.data.innertube.OnlinePlaylist
 import com.codetrio.spatialflow.data.innertube.OnlineSong
 import com.codetrio.spatialflow.data.innertube.SearchItem
+import com.codetrio.spatialflow.data.innertube.isWidescreenVideo
+import com.codetrio.spatialflow.data.innertube.preferredThumbnailRatio
 import com.codetrio.spatialflow.data.innertube.resize
 import com.codetrio.spatialflow.model.SongItem
+import com.codetrio.spatialflow.ui.components.SwipeToEnqueueContainer
 import com.codetrio.spatialflow.util.FavoritesManager
 import com.codetrio.spatialflow.util.SongDownloader
 import com.codetrio.spatialflow.viewmodel.ExploreViewModel
@@ -137,14 +159,16 @@ import com.codetrio.spatialflow.viewmodel.PlayerSharedViewModel
 class MorphShape(
     private val morph: Morph,
     private val progress: Float,
-    private val rotationDegrees: Float = 0f
+    private val rotationDegrees: Float = 0f,
+    private val springScale: Float = 1f
 ) : Shape {
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
         density: Density
     ): Outline {
-        val androidPath = morph.toPath(progress = progress).asComposePath().asAndroidPath()
+        val clampedProgress = progress.coerceIn(0f, 1f)
+        val androidPath = morph.toPath(progress = clampedProgress).asComposePath().asAndroidPath()
 
         val bounds = android.graphics.RectF()
         androidPath.computeBounds(bounds, true)
@@ -165,19 +189,22 @@ class MorphShape(
         val containerMin = minOf(size.width, size.height)
         val maxRadius = kotlin.math.hypot(pathWidth / 2f, pathHeight / 2f)
 
-        // For rotating shapes, scale so the maximum corner radius fills 99% of container bounds (0.99 * containerMin / 2).
-        // This guarantees maximum size while keeping 360° rotation completely inside the composable box with ZERO clipping.
-        val scale = if (rotationDegrees != 0f && maxRadius > 0f) {
+        // Base scale calculation
+        val baseScale = if (rotationDegrees != 0f && maxRadius > 0f) {
             (containerMin / 2f * 0.99f) / maxRadius
         } else {
             containerMin / maxOf(pathWidth, pathHeight)
         }
 
+        // Apply M3 Expressive spring bounce overshoot scale if progress exceeds [0,1]
+        val overshootDelta = progress - clampedProgress
+        val effectiveScale = baseScale * (springScale + overshootDelta * 0.45f)
+
         val m = android.graphics.Matrix()
         // 1. Translate path center to origin (0,0)
         m.postTranslate(-pathCx, -pathCy)
-        // 2. Scale safely within container bounds
-        m.postScale(scale, scale)
+        // 2. Scale with spring bounce
+        m.postScale(effectiveScale, effectiveScale)
         // 3. Rotate around origin (which is the path center)
         if (rotationDegrees != 0f) {
             m.postRotate(rotationDegrees)
@@ -195,6 +222,7 @@ data class ExpressiveShapeMorphState(
     val easedProgress: Float
 )
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun rememberExpressiveShapeMorph(
     shapes: List<androidx.graphics.shapes.RoundedPolygon> = ExpressiveMaterialShapes,
@@ -223,11 +251,16 @@ fun rememberExpressiveShapeMorph(
     val currentIndex = globalProgress.toInt() % shapes.size
     val nextIndex = (currentIndex + 1) % shapes.size
     val segmentFraction = globalProgress - globalProgress.toInt()
-    val easedProgress = FastOutSlowInEasing.transform(segmentFraction)
+    
+    // M3 Expressive spring bounce pop curve during morphing
+    val springBounce = (kotlin.math.sin(segmentFraction * Math.PI.toFloat()) * 0.06f)
+    val easedProgress = remember(segmentFraction) {
+        (1f - kotlin.math.cos(segmentFraction * Math.PI.toFloat())) / 2f
+    }
     val morph = remember(currentIndex, nextIndex) {
         Morph(shapes[currentIndex], shapes[nextIndex])
     }
-    val morphShape = MorphShape(morph, easedProgress, rotationAngle)
+    val morphShape = MorphShape(morph, easedProgress, rotationAngle, springScale = 1f + springBounce)
     return ExpressiveShapeMorphState(morphShape, easedProgress)
 }
 
@@ -248,19 +281,14 @@ val ExpressiveMaterialShapes = listOf(
     MaterialShapes.Cookie7Sided,
     MaterialShapes.Cookie9Sided,
     MaterialShapes.Diamond,
-    MaterialShapes.Fan,
     MaterialShapes.Flower,
     MaterialShapes.Gem,
     MaterialShapes.Ghostish,
-    MaterialShapes.Heart,
     MaterialShapes.Oval,
     MaterialShapes.Pentagon,
     MaterialShapes.Pill,
     MaterialShapes.PixelCircle,
-    MaterialShapes.PixelTriangle,
-    MaterialShapes.Puffy,
     MaterialShapes.PuffyDiamond,
-    MaterialShapes.SemiCircle,
     MaterialShapes.Slanted,
     MaterialShapes.SoftBoom,
     MaterialShapes.SoftBurst,
@@ -307,34 +335,21 @@ fun UnifiedShimmerProvider(content: @Composable () -> Unit) {
 fun ShimmerModifier(
     width: Dp,
     height: Dp,
-    shape: androidx.compose.ui.graphics.Shape = RoundedCornerShape(8.dp),
+    shape: Shape = RoundedCornerShape(8.dp),
     useMorphingLoadingShape: Boolean = false
 ) {
     val finalShape = if (useMorphingLoadingShape) {
-        val shapes = remember {
-            listOf(
-                MaterialShapes.Cookie6Sided,
-                MaterialShapes.SoftBurst,
-                MaterialShapes.PuffyDiamond,
-                MaterialShapes.Square
-            )
-        }
-        val transition = rememberInfiniteTransition(label = "shimmer_morph")
-        val progress by transition.animateFloat(
-            initialValue = 0f,
-            targetValue = shapes.size.toFloat(),
-            animationSpec = infiniteRepeatable(
-                animation = tween(shapes.size * 1200, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart
-            ),
-            label = "progress"
+        val morphState = rememberExpressiveShapeMorph(
+            shapes = remember {
+                listOf(
+                    MaterialShapes.Cookie6Sided,
+                    MaterialShapes.SoftBurst,
+                    MaterialShapes.PuffyDiamond,
+                    MaterialShapes.Square
+                )
+            }
         )
-        val currentIndex = progress.toInt() % shapes.size
-        val nextIndex = (currentIndex + 1) % shapes.size
-        val fraction = progress - progress.toInt()
-        val easedFraction = FastOutSlowInEasing.transform(fraction)
-        val morph = remember(currentIndex, nextIndex) { Morph(shapes[currentIndex], shapes[nextIndex]) }
-        MorphShape(morph, easedFraction)
+        morphState.morphShape
     } else {
         shape
     }
@@ -366,29 +381,30 @@ fun ShimmerModifier(
     )
 }
 
-fun Modifier.shimmerEffect(): Modifier = composed {
-    var size by remember { mutableStateOf(Size.Zero) }
-    val transition = rememberInfiniteTransition(label = "shimmer_effect")
-    val startOffsetX by transition.animateFloat(
-        initialValue = -2 * size.width,
-        targetValue = 2 * size.width,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing)
+fun Modifier.shimmerEffect(shape: Shape = RoundedCornerShape(8.dp)): Modifier =
+    clip(shape).background(Color.Transparent)
+
+/**
+ * Material 3 Expressive spring press scale modifier.
+ * Animates touch press scale below recomposition layer via graphicsLayer.
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+fun Modifier.expressivePressScale(
+    interactionSource: MutableInteractionSource,
+    targetScale: Float = 0.95f
+): Modifier = composed {
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) targetScale else 1f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
         ),
-        label = "shimmer_offset"
+        label = "expressive_press_scale"
     )
-    val colorLow = MaterialTheme.colorScheme.surfaceContainerLow
-    val colorHigh = MaterialTheme.colorScheme.surfaceContainerHigh
-    
-    background(
-        brush = Brush.linearGradient(
-            colors = listOf(colorLow, colorHigh, colorLow),
-            start = Offset(startOffsetX, 0f),
-            end = Offset(startOffsetX + size.width, size.height)
-        )
-    )
-    .onGloballyPositioned {
-        size = Size(it.size.width.toFloat(), it.size.height.toFloat())
+    this.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
     }
 }
 
@@ -418,9 +434,36 @@ fun AnimatedEqualizerBars(
     )
     Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Bottom) {
         val barWidth = 3.dp
-        Box(modifier = Modifier.width(barWidth).fillMaxHeight(height1).background(color, RoundedCornerShape(1.dp)))
-        Box(modifier = Modifier.width(barWidth).fillMaxHeight(height2).background(color, RoundedCornerShape(1.dp)))
-        Box(modifier = Modifier.width(barWidth).fillMaxHeight(height3).background(color, RoundedCornerShape(1.dp)))
+        Box(
+            modifier = Modifier
+                .width(barWidth)
+                .fillMaxHeight()
+                .graphicsLayer {
+                    scaleY = height1
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+                }
+                .background(color, RoundedCornerShape(1.dp))
+        )
+        Box(
+            modifier = Modifier
+                .width(barWidth)
+                .fillMaxHeight()
+                .graphicsLayer {
+                    scaleY = height2
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+                }
+                .background(color, RoundedCornerShape(1.dp))
+        )
+        Box(
+            modifier = Modifier
+                .width(barWidth)
+                .fillMaxHeight()
+                .graphicsLayer {
+                    scaleY = height3
+                    transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+                }
+                .background(color, RoundedCornerShape(1.dp))
+        )
     }
 }
 
@@ -491,7 +534,7 @@ fun WelcomeGreetingBanner(userName: String?) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 20.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -518,6 +561,7 @@ fun WelcomeGreetingBanner(userName: String?) {
 }
 // ===== Top Result Hero Card (YouTube Music Style) =====
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun TopResultCard(
     topResult: SearchItem.TopResult,
@@ -527,13 +571,23 @@ fun TopResultCard(
     onMoreClick: () -> Unit,
     onClick: () -> Unit
 ) {
+    val haptic = LocalHapticFeedback.current
+    val isArtist = topResult.artist != null || topResult.itemType.equals("Artist", ignoreCase = true)
+    val isAlbum = topResult.album != null || topResult.itemType.equals("Album", ignoreCase = true) || topResult.itemType.equals("EP", ignoreCase = true) || topResult.itemType.equals("Single", ignoreCase = true)
+    val isPlaylist = topResult.playlist != null || topResult.itemType.equals("Playlist", ignoreCase = true)
+    val isSong = !isArtist && !isAlbum && !isPlaylist
+
+    // Concentric Corner: Outer Card (28.dp) - Padding (20.dp) = 8.dp squircle
+    val imageShape = if (isArtist) CircleShape else SpatialShapes.concentricSquircle(28.dp, 20.dp)
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(20.dp))
+            .animateContentSize()
+            .clip(SpatialShapes.ExtraLarge)
             .clickable(onClick = onClick),
-        shape = RoundedCornerShape(20.dp),
+        shape = SpatialShapes.ExtraLarge,
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
         )
@@ -541,130 +595,220 @@ fun TopResultCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .padding(20.dp)
         ) {
-            // Header / Title row
+            // Header / Pill Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                        Text(
+                            text = "TOP RESULT",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.5.sp
+                            )
+                        )
+                    }
+                }
+
+                val typeLabel = when {
+                    isArtist -> "Artist"
+                    isAlbum -> if (topResult.itemType.equals("EP", ignoreCase = true)) "EP" else if (topResult.itemType.equals("Single", ignoreCase = true)) "Single" else "Album"
+                    isPlaylist -> "Playlist"
+                    topResult.itemType.equals("Video", ignoreCase = true) -> "Video"
+                    else -> "Song"
+                }
+
+                Text(
+                    text = typeLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Main Content Row (Thumbnail + Details)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SubcomposeAsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(topResult.thumbnailUrl?.resize(160))
-                        .crossfade(true)
-                        .build(),
-                    contentDescription = null,
-                    loading = {
-                        Box(modifier = Modifier.fillMaxSize().shimmerEffect())
-                    },
+                Box(
                     modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(8.dp)),
-                    contentScale = ContentScale.Crop
-                )
+                        .size(80.dp)
+                        .clip(imageShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                ) {
+                    SpatialImage(
+                        model = topResult.thumbnailUrl,
+                        contentDescription = null,
+                        size = ImageSemanticSize.ThumbnailMedium,
+                        shape = imageShape,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
 
-                Spacer(modifier = Modifier.width(14.dp))
+                    if (isCurrentlyPlaying) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.45f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Equalizer,
+                                contentDescription = "Playing",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(16.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = topResult.title,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 19.sp
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = topResult.subtitle,
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 14.sp
+                        ),
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-
-                IconButton(
-                    onClick = onMoreClick,
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "More Options",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
-            // Action Button (Play for tracks/albums/playlists, Go to Profile for artists)
-            val isArtist = topResult.artist != null ||
-                    topResult.itemType.equals("Artist", ignoreCase = true) ||
-                    topResult.subtitle.contains("Artist", ignoreCase = true)
-
+            // Action Row: Hero Action and Secondary Controls
             Row(
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                if (isArtist) {
-                    // Solid White "Go to Profile" Button for Artist results
-                    Button(
-                        onClick = onClick,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(42.dp),
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White,
-                            contentColor = Color.Black
-                        ),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Person,
-                            contentDescription = "Go to Profile",
-                            tint = Color.Black,
-                            modifier = Modifier.size(20.dp)
+                // Primary Hero Action Button
+                val interactionSource = remember { MutableInteractionSource() }
+                val isPressed by interactionSource.collectIsPressedAsState()
+                val cornerRadius by animateDpAsState(
+                    targetValue = if (isPressed) 12.dp else 24.dp,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    ),
+                    label = "PrimaryActionCorner"
+                )
+
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        if (isSong) onPlayClick() else onClick()
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(48.dp),
+                    interactionSource = interactionSource,
+                    shape = SpatialShapes.squircle(cornerRadius),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.primary,
+                        contentColor = if (isCurrentlyPlaying) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onPrimary
+                    ),
+                    contentPadding = PaddingValues(horizontal = 16.dp)
+                ) {
+                    Icon(
+                        imageVector = when {
+                            isArtist -> Icons.Rounded.Person
+                            isAlbum -> Icons.Filled.Album
+                            isPlaylist -> Icons.AutoMirrored.Filled.PlaylistPlay
+                            isCurrentlyPlaying -> Icons.Rounded.Pause
+                            else -> Icons.Rounded.PlayArrow
+                        },
+                        contentDescription = when {
+                            isArtist -> "View Artist"
+                            isAlbum -> "View Album"
+                            isPlaylist -> "View Playlist"
+                            isCurrentlyPlaying -> "Pause"
+                            else -> "Play"
+                        },
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = when {
+                            isArtist -> "View Artist"
+                            isAlbum -> "View Album"
+                            isPlaylist -> "View Playlist"
+                            isCurrentlyPlaying -> "Playing"
+                            else -> "Play"
+                        },
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
                         )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Go to Profile",
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.Bold
-                            ),
-                            color = Color.Black
-                        )
-                    }
-                } else {
-                    // Solid White "Play" Button for Song / Video / Album / Playlist results
-                    Button(
-                        onClick = onPlayClick,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(42.dp),
-                        shape = CircleShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = Color.White,
-                            contentColor = Color.Black
-                        ),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 0.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow,
-                            contentDescription = "Play",
-                            tint = Color.Black,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = "Play",
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.Bold
-                            ),
-                            color = Color.Black
-                        )
-                    }
+                    )
+                }
+
+                // Secondary Action: More Options
+                val moreInteractionSource = remember { MutableInteractionSource() }
+                val isMorePressed by moreInteractionSource.collectIsPressedAsState()
+                val moreCornerRadius by animateDpAsState(
+                    targetValue = if (isMorePressed) 10.dp else 16.dp,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessMedium
+                    ),
+                    label = "MoreCorner"
+                )
+
+                FilledTonalIconButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onMoreClick()
+                    },
+                    modifier = Modifier.size(48.dp),
+                    interactionSource = moreInteractionSource,
+                    shape = SpatialShapes.squircle(moreCornerRadius),
+                    colors = IconButtonDefaults.filledTonalIconButtonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.MoreVert,
+                        contentDescription = "More Options",
+                        modifier = Modifier.size(22.dp)
+                    )
                 }
             }
         }
@@ -702,11 +846,62 @@ fun SearchResultItem(
     onTouchDown: () -> Unit = {},
     onClick: () -> Unit
 ) {
+    if (item is SearchItem.Song) {
+        val context = LocalContext.current
+        val activity = remember(context) { context as? androidx.fragment.app.FragmentActivity }
+        val playerSharedViewModel = remember(activity) {
+            activity?.let { androidx.lifecycle.ViewModelProvider(it)[PlayerSharedViewModel::class.java] }
+        }
+
+        SwipeToEnqueueContainer(
+            onPlayNext = {
+                val songItem = SongItem.createOnlineSong(
+                    item.song.videoId, item.song.title, item.song.artist, "", item.song.durationMs, item.song.thumbnailUrl, item.song.artistId
+                )
+                playerSharedViewModel?.addToQueueNext(songItem)
+            },
+            onAddToQueue = {
+                val songItem = SongItem.createOnlineSong(
+                    item.song.videoId, item.song.title, item.song.artist, "", item.song.durationMs, item.song.thumbnailUrl, item.song.artistId
+                )
+                playerSharedViewModel?.addToQueue(songItem)
+            }
+        ) {
+            SearchResultItemContent(
+                item = item,
+                isCurrentlyPlaying = isCurrentlyPlaying,
+                isLoading = isLoading,
+                onSongMenuClick = onSongMenuClick,
+                onTouchDown = onTouchDown,
+                onClick = onClick
+            )
+        }
+    } else {
+        SearchResultItemContent(
+            item = item,
+            isCurrentlyPlaying = isCurrentlyPlaying,
+            isLoading = isLoading,
+            onSongMenuClick = onSongMenuClick,
+            onTouchDown = onTouchDown,
+            onClick = onClick
+        )
+    }
+}
+
+@Composable
+private fun SearchResultItemContent(
+    item: SearchItem,
+    isCurrentlyPlaying: Boolean,
+    isLoading: Boolean,
+    onSongMenuClick: ((OnlineSong) -> Unit)? = null,
+    onTouchDown: () -> Unit = {},
+    onClick: () -> Unit
+) {
     val backgroundColor = if (isCurrentlyPlaying)
         MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
     else Color.Transparent
 
-    val containerShape = RoundedCornerShape(8.dp)
+    val containerShape = RoundedCornerShape(12.dp)
 
     val thumbnailUrl = when (item) {
         is SearchItem.TopResult -> item.thumbnailUrl
@@ -725,7 +920,7 @@ fun SearchResultItem(
         is SearchItem.Artist -> item.artist.browseId
         is SearchItem.Playlist -> item.playlist.playlistId
     }
-    val imageShape = if (isCircle) CircleShape else RoundedCornerShape(4.dp) // Match YT Music sharp rounded corner
+    val imageShape = if (isCircle) CircleShape else RoundedCornerShape(6.dp)
 
     val itemBadge = when (item) {
         is SearchItem.Song -> item.badge ?: item.typeText
@@ -737,7 +932,8 @@ fun SearchResultItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp, vertical = 2.dp) // Perfect gap between items
+            .animateContentSize()
+            .padding(horizontal = 8.dp, vertical = 3.dp)
             .clip(containerShape)
             .background(backgroundColor)
             .combinedClickable(
@@ -748,43 +944,27 @@ fun SearchResultItem(
                     }
                 }
             )
-            .padding(horizontal = 8.dp, vertical = 6.dp), // Tighter inner layout padding
+            .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Thumbnail Image
-        Box(modifier = Modifier.size(48.dp)) {
-            SubcomposeAsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(thumbnailUrl?.resize(120))
-                    .crossfade(true)
-                    .build(),
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(imageShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+        ) {
+            SpatialImage(
+                model = thumbnailUrl,
                 contentDescription = null,
-                loading = {
-                    Box(modifier = Modifier.fillMaxSize().shimmerEffect())
-                },
-                modifier = Modifier.fillMaxSize().clip(imageShape).sharedElementIfAvailable("image-$itemId"),
+                size = ImageSemanticSize.ThumbnailMedium,
+                shape = imageShape,
+                modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
-            if (isLoading) {
-                val loadingTransition = rememberInfiniteTransition(label = "loading_shimmer")
-                val shimmerAlpha by loadingTransition.animateFloat(
-                    initialValue = 0.3f, targetValue = 0.7f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(800, easing = LinearEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ), label = "shimmer_alpha"
-                )
-                Box(
-                    modifier = Modifier.fillMaxSize().clip(imageShape)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = shimmerAlpha)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    LoadingIndicator(modifier = Modifier.size(20.dp))
-                }
-            }
         }
 
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(14.dp))
 
         // Titles and Details
         Column(modifier = Modifier.weight(1f)) {
@@ -799,13 +979,25 @@ fun SearchResultItem(
                 },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = if (isCurrentlyPlaying) FontWeight.SemiBold else FontWeight.Medium
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = if (isCurrentlyPlaying) FontWeight.SemiBold else FontWeight.Medium,
+                    fontSize = 15.5.sp
                 ),
                 color = if (isCurrentlyPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
             )
-            Spacer(modifier = Modifier.height(1.dp))
+            Spacer(modifier = Modifier.height(3.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
+                val isExplicit = when (item) {
+                    is SearchItem.Song -> item.song.isExplicit
+                    is SearchItem.TopResult -> item.song?.isExplicit == true
+                    else -> false
+                }
+                if (isExplicit) {
+                    com.codetrio.spatialflow.ui.components.ExplicitBadge(
+                        size = 13.dp,
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+                }
                 if (!itemBadge.isNullOrBlank()) {
                     Surface(
                         shape = RoundedCornerShape(4.dp),
@@ -825,21 +1017,47 @@ fun SearchResultItem(
                 }
                 Text(
                     text = when (item) {
-                        is SearchItem.TopResult -> item.subtitle
+                        is SearchItem.TopResult -> {
+                            if (item.song != null) {
+                                val dur = item.song.duration ?: if (item.song.durationMs > 0) {
+                                    val totalSec = item.song.durationMs / 1000
+                                    val min = totalSec / 60
+                                    val sec = totalSec % 60
+                                    if (sec < 10) "$min:0$sec" else "$min:$sec"
+                                } else null
+                                "Song • ${item.song.artist}${dur?.let { " • $it" } ?: ""}"
+                            } else if (item.album != null) {
+                                "Album • ${item.album.artists.joinToString { it.name }}${item.album.year?.let { " • $it" } ?: ""}"
+                            } else {
+                                item.subtitle
+                            }
+                        }
                         is SearchItem.Header -> ""
-                        is SearchItem.Song -> "${item.song.artist}${item.song.duration?.let { " • $it" } ?: ""}"
+                        is SearchItem.Song -> {
+                            val dur = item.song.duration ?: if (item.song.durationMs > 0) {
+                                val totalSec = item.song.durationMs / 1000
+                                val min = totalSec / 60
+                                val sec = totalSec % 60
+                                if (sec < 10) "$min:0$sec" else "$min:$sec"
+                            } else null
+                            "${item.song.artist}${dur?.let { " • $it" } ?: ""}"
+                        }
                         is SearchItem.Album -> "Album • ${item.album.artists.joinToString { it.name }}${item.album.year?.let { " • $it" } ?: ""}"
                         is SearchItem.Artist -> "Artist${item.artist.subscriberCount?.let { count ->
-                            val clean = count.replace("Spotify", "", ignoreCase = true)
-                                .replace("Monthly Monthly Listeners", "Monthly Listeners", ignoreCase = true)
-                                .trim()
+                            val clean = if (count.contains("Spotify", ignoreCase = true) || count.contains("Monthly", ignoreCase = true)) {
+                                count.replace("Spotify", "", ignoreCase = true)
+                                    .replace("Monthly Monthly Listeners", "Monthly Listeners", ignoreCase = true)
+                                    .trim()
+                            } else count.trim()
                             if (clean.isNotEmpty()) " • $clean" else ""
                         } ?: ""}"
                         is SearchItem.Playlist -> "Playlist${item.playlist.songCount?.let { " • $it songs" } ?: ""}"
                     },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontSize = 13.5.sp
+                    ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -854,7 +1072,7 @@ fun SearchResultItem(
         ) {
             if (item is SearchItem.Song && isCurrentlyPlaying && !isLoading) {
                 AnimatedEqualizerBars(
-                    modifier = Modifier.size(20.dp).height(12.dp),
+                    modifier = Modifier.size(22.dp).height(14.dp),
                     color = MaterialTheme.colorScheme.primary
                 )
             }
@@ -869,30 +1087,179 @@ fun SearchResultItem(
                             Icon(
                                 imageVector = Icons.Default.MoreVert,
                                 contentDescription = "More Options",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.80f),
                                 modifier = Modifier.size(20.dp)
                             )
                         }
                     } else {
-                        Spacer(modifier = Modifier.size(36.dp))
+                        Spacer(modifier = Modifier.width(36.dp))
                     }
                 }
                 is SearchItem.Album, is SearchItem.Playlist -> {
                     Box(
-                        modifier = Modifier.size(36.dp),
+                        modifier = Modifier.size(40.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.ChevronRight,
                             contentDescription = null,
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(22.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
                 else -> {
-                    Spacer(modifier = Modifier.size(36.dp))
+                    Spacer(modifier = Modifier.size(40.dp))
                 }
+            }
+        }
+    }
+}
+
+// ===== Search Skeleton Loaders =====
+
+@Composable
+fun TopResultCardSkeleton(modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(18.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ShimmerModifier(
+                    width = 72.dp,
+                    height = 72.dp,
+                    shape = RoundedCornerShape(24.dp.concentricInner(18.dp))
+                )
+
+                Spacer(modifier = Modifier.width(16.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    ShimmerModifier(
+                        width = 180.dp,
+                        height = 20.dp,
+                        shape = RoundedCornerShape(6.dp)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    ShimmerModifier(
+                        width = 120.dp,
+                        height = 14.dp,
+                        shape = RoundedCornerShape(4.dp)
+                    )
+                }
+
+                ShimmerModifier(
+                    width = 36.dp,
+                    height = 36.dp,
+                    shape = CircleShape
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            ShimmerModifier(
+                width = 320.dp,
+                height = 46.dp,
+                shape = CircleShape
+            )
+        }
+    }
+}
+
+@Composable
+fun SearchResultItemSkeleton(
+    isCircle: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 3.dp)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        ShimmerModifier(
+            width = 56.dp,
+            height = 56.dp,
+            shape = if (isCircle) CircleShape else RoundedCornerShape(6.dp)
+        )
+
+        Spacer(modifier = Modifier.width(14.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            ShimmerModifier(
+                width = 180.dp,
+                height = 16.dp,
+                shape = RoundedCornerShape(4.dp)
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            ShimmerModifier(
+                width = 120.dp,
+                height = 12.dp,
+                shape = RoundedCornerShape(4.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        ShimmerModifier(
+            width = 24.dp,
+            height = 24.dp,
+            shape = CircleShape
+        )
+    }
+}
+
+@Composable
+fun SearchResultsSkeletonList(modifier: Modifier = Modifier) {
+    UnifiedShimmerProvider {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .padding(bottom = 120.dp)
+        ) {
+            TopResultCardSkeleton()
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // Section Header Skeleton
+            Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                ShimmerModifier(
+                    width = 110.dp,
+                    height = 18.dp,
+                    shape = RoundedCornerShape(4.dp)
+                )
+            }
+            
+            repeat(6) { index ->
+                SearchResultItemSkeleton(isCircle = index == 3)
+            }
+        }
+    }
+}
+
+@Composable
+fun SearchPaginationSkeleton(modifier: Modifier = Modifier) {
+    UnifiedShimmerProvider {
+        Column(
+            modifier = modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
+        ) {
+            repeat(2) {
+                SearchResultItemSkeleton()
             }
         }
     }
@@ -916,7 +1283,15 @@ fun BentoCell(
         is SearchItem.Playlist -> item.playlist.title
     }
     val subtitle = when (item) {
-        is SearchItem.TopResult -> item.subtitle
+        is SearchItem.TopResult -> {
+            if (item.song != null) {
+                item.song.artist
+            } else if (item.album != null) {
+                item.album.artists.joinToString { it.name }
+            } else {
+                item.subtitle
+            }
+        }
         is SearchItem.Header -> ""
         is SearchItem.Song -> item.song.artist
         is SearchItem.Album -> item.album.artists.joinToString { it.name }
@@ -938,16 +1313,12 @@ fun BentoCell(
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
         elevation = CardDefaults.cardElevation(0.dp)
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            SubcomposeAsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(thumbnailUrl?.resize(544))
-                    .crossfade(true)
-                    .build(),
+        Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHigh)) {
+            SpatialImage(
+                model = thumbnailUrl,
                 contentDescription = null,
-                loading = {
-                    Box(modifier = Modifier.fillMaxSize().shimmerEffect())
-                },
+                size = ImageSemanticSize.ThumbnailLarge,
+                shape = RoundedCornerShape(24.dp),
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
@@ -1003,8 +1374,8 @@ fun BentoCell(
 @Composable
 fun HomeSectionRow(
     section: HomeSection,
-    currentOnlineSong: OnlineSong?,
-    onSongClick: (OnlineSong) -> Unit,
+    currentSongId: String? = null,
+    onSongClick: (OnlineSong, List<OnlineSong>, Int) -> Unit,
     onAlbumClick: (OnlineAlbum) -> Unit,
     onArtistClick: (OnlineArtist) -> Unit,
     onPlaylistClick: (OnlinePlaylist) -> Unit,
@@ -1016,7 +1387,18 @@ fun HomeSectionRow(
 ) {
     val hasSongsOnly = section.items.isNotEmpty() && section.items.all { it is SearchItem.Song }
 
-    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+    val sectionSongs = remember(section.items) {
+        section.items.filterIsInstance<SearchItem.Song>().map { it.song }
+    }
+
+    val handleSongClick = remember(sectionSongs, onSongClick) {
+        { song: OnlineSong ->
+            val idx = sectionSongs.indexOfFirst { it.videoId == song.videoId }
+            onSongClick(song, sectionSongs, idx)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).animateContentSize()) {
         // Universal Section Header
         Row(
             modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
@@ -1037,7 +1419,7 @@ fun HomeSectionRow(
                     OutlinedButton(
                         onClick = {
                             val songs = section.items.filterIsInstance<SearchItem.Song>().map { it.song }
-                            if (songs.isNotEmpty()) onSongClick(songs.first())
+                            if (songs.isNotEmpty()) handleSongClick(songs.first())
                         },
                         modifier = Modifier.height(32.dp),
                         shape = CircleShape,
@@ -1072,10 +1454,10 @@ fun HomeSectionRow(
             section.title.contains("personalized mix", ignoreCase = true) && section.items.size >= 5 -> {
                 val items = section.items
                 Column(
-                    modifier = Modifier.padding(horizontal = 16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).animateContentSize(),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Row(modifier = Modifier.height(260.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(modifier = Modifier.heightIn(min = 220.dp, max = 280.dp).animateContentSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         // Dominant Feature
                         BentoCell(
                             item = items[0],
@@ -1083,7 +1465,7 @@ fun HomeSectionRow(
                             isFeature = true,
                             onClick = {
                                 when (val it = items[0]) {
-                                    is SearchItem.Song -> onSongClick(it.song)
+                                    is SearchItem.Song -> handleSongClick(it.song)
                                     is SearchItem.Album -> onAlbumClick(it.album)
                                     is SearchItem.Artist -> onArtistClick(it.artist)
                                     is SearchItem.Playlist -> onPlaylistClick(it.playlist)
@@ -1095,7 +1477,7 @@ fun HomeSectionRow(
                         Column(modifier = Modifier.weight(0.75f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             BentoCell(item = items[1], modifier = Modifier.weight(1f).fillMaxWidth(), onClick = {
                                 when (val it = items[1]) {
-                                    is SearchItem.Song -> onSongClick(it.song)
+                                    is SearchItem.Song -> handleSongClick(it.song)
                                     is SearchItem.Album -> onAlbumClick(it.album)
                                     is SearchItem.Artist -> onArtistClick(it.artist)
                                     is SearchItem.Playlist -> onPlaylistClick(it.playlist)
@@ -1104,7 +1486,7 @@ fun HomeSectionRow(
                             })
                             BentoCell(item = items[2], modifier = Modifier.weight(1f).fillMaxWidth(), onClick = {
                                 when (val it = items[2]) {
-                                    is SearchItem.Song -> onSongClick(it.song)
+                                    is SearchItem.Song -> handleSongClick(it.song)
                                     is SearchItem.Album -> onAlbumClick(it.album)
                                     is SearchItem.Artist -> onArtistClick(it.artist)
                                     is SearchItem.Playlist -> onPlaylistClick(it.playlist)
@@ -1113,11 +1495,11 @@ fun HomeSectionRow(
                             })
                         }
                     }
-                    Row(modifier = Modifier.height(130.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(modifier = Modifier.heightIn(min = 110.dp, max = 150.dp).animateContentSize(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         // Lower row wide tiles
                         BentoCell(item = items[3], modifier = Modifier.weight(1f).fillMaxHeight(), onClick = {
                             when (val it = items[3]) {
-                                is SearchItem.Song -> onSongClick(it.song)
+                                is SearchItem.Song -> handleSongClick(it.song)
                                 is SearchItem.Album -> onAlbumClick(it.album)
                                 is SearchItem.Artist -> onArtistClick(it.artist)
                                 is SearchItem.Playlist -> onPlaylistClick(it.playlist)
@@ -1126,7 +1508,7 @@ fun HomeSectionRow(
                         })
                         BentoCell(item = items[4], modifier = Modifier.weight(1f).fillMaxHeight(), onClick = {
                             when (val it = items[4]) {
-                                is SearchItem.Song -> onSongClick(it.song)
+                                is SearchItem.Song -> handleSongClick(it.song)
                                 is SearchItem.Album -> onAlbumClick(it.album)
                                 is SearchItem.Artist -> onArtistClick(it.artist)
                                 is SearchItem.Playlist -> onPlaylistClick(it.playlist)
@@ -1139,9 +1521,9 @@ fun HomeSectionRow(
 
             // 1. SPEED DIAL — 3×3 Squircle Grid
             section.title.contains("speed dial", ignoreCase = true) -> {
-                val rows = section.items.take(9).chunked(3)
+                val rows = remember(section.items) { section.items.take(9).chunked(3) }
                 Column(
-                    modifier = Modifier.padding(horizontal = 16.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp).animateContentSize(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     rows.forEach { rowItems ->
@@ -1168,7 +1550,7 @@ fun HomeSectionRow(
                                         .clip(RoundedCornerShape(12.dp))
                                         .clickable {
                                             when (item) {
-                                                is SearchItem.Song -> onSongClick(item.song)
+                                                is SearchItem.Song -> handleSongClick(item.song)
                                                 is SearchItem.Album -> onAlbumClick(item.album)
                                                 is SearchItem.Artist -> onArtistClick(item.artist)
                                                 is SearchItem.Playlist -> onPlaylistClick(item.playlist)
@@ -1176,9 +1558,11 @@ fun HomeSectionRow(
                                             }
                                         }
                                 ) {
-                                    AsyncImage(
-                                        model = thumbnailUrl?.resize(240),
+                                    SpatialImage(
+                                        model = thumbnailUrl,
                                         contentDescription = null,
+                                        size = ImageSemanticSize.ThumbnailMedium,
+                                        shape = RoundedCornerShape(12.dp),
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
                                     )
@@ -1219,17 +1603,19 @@ fun HomeSectionRow(
                 ) {
                     itemsIndexed(
                         items = section.items,
-                        key = { index, item ->
-                            val baseKey = when (item) {
-                                is SearchItem.Song -> "discover-song-${item.song.videoId}"
-                                is SearchItem.Album -> "discover-album-${item.album.browseId}"
-                                is SearchItem.Artist -> "discover-artist-${item.artist.browseId}"
-                                is SearchItem.Playlist -> "discover-playlist-${item.playlist.playlistId}"
-                                is SearchItem.TopResult -> "discover-top-${item.title}"
-                                is SearchItem.Header -> "discover-header-${item.title}"
+                        key = { idx, item ->
+                            val sectionScope = section.title.hashCode()
+                            val contentId = when (item) {
+                                is SearchItem.Song -> item.song.videoId
+                                is SearchItem.Album -> item.album.browseId
+                                is SearchItem.Artist -> item.artist.browseId
+                                is SearchItem.Playlist -> item.playlist.playlistId
+                                is SearchItem.TopResult -> item.title
+                                is SearchItem.Header -> item.title
                             }
-                            "$index-$baseKey"
-                        }
+                            "discover-$sectionScope-$idx-$contentId"
+                        },
+                        contentType = { _, _ -> "discover_card" }
                     ) { _, item ->
                         val title = when (item) {
                             is SearchItem.TopResult -> item.title
@@ -1263,11 +1649,11 @@ fun HomeSectionRow(
                         }
 
                         Box(
-                            modifier = Modifier.width(300.dp).height(300.dp)
+                            modifier = Modifier.widthIn(min = 260.dp, max = 320.dp).aspectRatio(1f).animateContentSize()
                                 .clip(RoundedCornerShape(16.dp))
                                 .clickable {
                                     when (item) {
-                                        is SearchItem.Song -> onSongClick(item.song)
+                                        is SearchItem.Song -> handleSongClick(item.song)
                                         is SearchItem.Album -> onAlbumClick(item.album)
                                         is SearchItem.Artist -> onArtistClick(item.artist)
                                         is SearchItem.Playlist -> onPlaylistClick(item.playlist)
@@ -1275,9 +1661,11 @@ fun HomeSectionRow(
                                     }
                                 }
                         ) {
-                            AsyncImage(
-                                model = thumbnailUrl?.resize(240),
+                            SpatialImage(
+                                model = thumbnailUrl,
                                 contentDescription = null,
+                                size = ImageSemanticSize.ThumbnailMedium,
+                                shape = RoundedCornerShape(16.dp),
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop
                             )
@@ -1333,21 +1721,23 @@ fun HomeSectionRow(
                 ) {
                     itemsIndexed(
                         items = section.items,
-                        key = { index, item ->
-                            val baseKey = when (item) {
-                                is SearchItem.Song -> "community-song-${item.song.videoId}"
-                                is SearchItem.Album -> "community-album-${item.album.browseId}"
-                                is SearchItem.Artist -> "community-artist-${item.artist.browseId}"
-                                is SearchItem.Playlist -> "community-playlist-${item.playlist.playlistId}"
-                                is SearchItem.TopResult -> "community-top-${item.title}"
-                                is SearchItem.Header -> "community-header-${item.title}"
+                        key = { idx, item ->
+                            val sectionScope = section.title.hashCode()
+                            val contentId = when (item) {
+                                is SearchItem.Song -> item.song.videoId
+                                is SearchItem.Album -> item.album.browseId
+                                is SearchItem.Artist -> item.artist.browseId
+                                is SearchItem.Playlist -> item.playlist.playlistId
+                                is SearchItem.TopResult -> item.title
+                                is SearchItem.Header -> item.title
                             }
-                            "$index-$baseKey"
-                        }
+                            "community-$sectionScope-$idx-$contentId"
+                        },
+                        contentType = { _, _ -> "community_card" }
                     ) { _, item ->
                         CommunityExpressiveCard(
                             item = item,
-                            onSongClick = onSongClick,
+                            onSongClick = handleSongClick,
                             onPlaylistClick = onPlaylistClick,
                             onAlbumClick = onAlbumClick,
                             onArtistClick = onArtistClick,
@@ -1360,21 +1750,27 @@ fun HomeSectionRow(
 
             // 4. GENERAL FALLBACK — Song List or Carousel
             else -> {
-                if (hasSongsOnly) {
-                    val songItems = section.items.filterIsInstance<SearchItem.Song>()
-                    val chunkedSongs = songItems.chunked(4)
+                val isVideoSection = section.title.contains("video", ignoreCase = true)
+                if (hasSongsOnly && !isVideoSection) {
+                    val chunkedSongs = remember(section.items) {
+                        section.items.filterIsInstance<SearchItem.Song>().chunked(4)
+                    }
                     LazyRow(
                         contentPadding = PaddingValues(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        itemsIndexed(items = chunkedSongs, key = { idx, _ -> "song-col-$idx-${section.title}" }) { _, songChunk ->
-                            Column(modifier = Modifier.width(320.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        itemsIndexed(
+                            items = chunkedSongs,
+                            key = { idx, chunk -> "song-col-$idx-${chunk.firstOrNull()?.song?.videoId ?: chunk.hashCode()}" },
+                            contentType = { _, _ -> "song_column" }
+                        ) { _, songChunk ->
+                            Column(modifier = Modifier.widthIn(min = 280.dp, max = 340.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 songChunk.forEach { item ->
                                     HomeSongListItem(
                                         song = item.song,
-                                        isPlaying = item.song.videoId == currentOnlineSong?.videoId,
+                                        isPlaying = item.song.videoId == currentSongId,
                                         onTouchDown = { onSongTouchDown(item.song) },
-                                        onClick = { onSongClick(item.song) },
+                                        onClick = { handleSongClick(item.song) },
                                         onMenuClick = { onSongMenuClick(item.song) }
                                     )
                                 }
@@ -1388,22 +1784,27 @@ fun HomeSectionRow(
                     ) {
                         itemsIndexed(
                             items = section.items,
-                            key = { index, item ->
-                                val baseKey = when (item) {
-                                    is SearchItem.Song -> "carousel-song-${item.song.videoId}-${section.title}"
-                                    is SearchItem.Album -> "carousel-album-${item.album.browseId}-${section.title}"
-                                    is SearchItem.Artist -> "carousel-artist-${item.artist.browseId}-${section.title}"
-                                    is SearchItem.Playlist -> "carousel-playlist-${item.playlist.playlistId}-${section.title}"
-                                    is SearchItem.TopResult -> "carousel-top-${item.title}-${section.title}"
-                                    is SearchItem.Header -> "carousel-header-${item.title}-${section.title}"
+                            key = { idx, item ->
+                                val sectionScope = section.title.hashCode()
+                                val contentId = when (item) {
+                                    is SearchItem.Song -> item.song.videoId
+                                    is SearchItem.Album -> item.album.browseId
+                                    is SearchItem.Artist -> item.artist.browseId
+                                    is SearchItem.Playlist -> item.playlist.playlistId
+                                    is SearchItem.TopResult -> item.title
+                                    is SearchItem.Header -> item.title
                                 }
-                                "$index-$baseKey"
+                                "carousel-$sectionScope-$idx-$contentId"
+                            },
+                            contentType = { _, item ->
+                                if (item.isWidescreenVideo || isVideoSection) "video_card" else "carousel_card"
                             }
                         ) { _, item ->
                             HomeCarouselItem(
                                 item = item,
+                                sectionTitle = section.title,
                                 isPlaying = when (item) {
-                                    is SearchItem.Song -> item.song.videoId == currentOnlineSong?.videoId
+                                    is SearchItem.Song -> item.song.videoId == currentSongId
                                     else -> false
                                 },
                                 onTouchDown = {
@@ -1411,7 +1812,7 @@ fun HomeSectionRow(
                                 },
                                 onClick = {
                                     when (item) {
-                                        is SearchItem.Song -> onSongClick(item.song)
+                                        is SearchItem.Song -> handleSongClick(item.song)
                                         is SearchItem.Album -> onAlbumClick(item.album)
                                         is SearchItem.Artist -> onArtistClick(item.artist)
                                         is SearchItem.Playlist -> onPlaylistClick(item.playlist)
@@ -1433,12 +1834,21 @@ fun HomeSectionRow(
 fun HomeCarouselItem(
     item: SearchItem,
     isPlaying: Boolean,
+    sectionTitle: String? = null,
     onTouchDown: () -> Unit = {},
     onClick: () -> Unit,
-    modifier: Modifier = Modifier.width(160.dp)
+    modifier: Modifier = Modifier
 ) {
     val isCircle = item is SearchItem.Artist
+    val ratio = remember(item, sectionTitle) { item.preferredThumbnailRatio(sectionTitle) }
+    val isWidescreen = ratio > 1.2f
     val imageShape = if (isCircle) CircleShape else RoundedCornerShape(8.dp)
+    val baseAlbumHeight = 160.dp
+    val cardWidth = when {
+        isWidescreen -> (baseAlbumHeight * ratio)
+        isCircle -> baseAlbumHeight
+        else -> baseAlbumHeight
+    }
     val itemId = when (item) {
         is SearchItem.TopResult -> "top-${item.title}"
         is SearchItem.Header -> "header-${item.title}"
@@ -1476,23 +1886,28 @@ fun HomeCarouselItem(
 
     Column(
         modifier = modifier
+            .width(cardWidth)
+            .animateContentSize()
             .clickable(onClick = onClick),
         horizontalAlignment = Alignment.Start
     ) {
         Box(
-            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            modifier = Modifier.fillMaxWidth().aspectRatio(ratio),
             contentAlignment = Alignment.TopStart
         ) {
             Card(
-                modifier = Modifier.fillMaxSize().sharedElementIfAvailable("image-$itemId"),
+                modifier = Modifier.fillMaxSize(),
                 shape = imageShape,
                 elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
             ) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    AsyncImage(
-                        model = thumbnailUrl?.resize(240),
+                    SpatialImage(
+                        model = thumbnailUrl,
                         contentDescription = null,
+                        size = if (isWidescreen) ImageSemanticSize.ThumbnailLarge else ImageSemanticSize.ThumbnailMedium,
+                        shape = imageShape,
+                        aspectRatio = ratio,
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop
                     )
@@ -1508,29 +1923,48 @@ fun HomeCarouselItem(
                             )
                         }
                     }
+                    val durationText = (item as? SearchItem.Song)?.song?.duration
+                    if (isWidescreen && !durationText.isNullOrBlank()) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(6.dp)
+                                .background(
+                                    color = Color.Black.copy(alpha = 0.75f),
+                                    shape = RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 5.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = durationText,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                                color = Color.White
+                            )
+                        }
+                    }
                 }
             }
         }
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
         Text(
             text = title,
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onBackground,
-            minLines = 2,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth()
         )
-        Text(
-            text = subtitle.ifBlank { " " },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            minLines = 1,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth()
-        )
+        if (subtitle.isNotBlank()) {
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
@@ -1545,20 +1979,25 @@ fun HomeSongListItem(
     onMenuClick: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (isPlaying) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.22f) else Color.Transparent)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onMenuClick
             )
-            .padding(vertical = 10.dp, horizontal = 8.dp),
+            .padding(vertical = 6.dp, horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(modifier = Modifier.size(56.dp)) {
-            AsyncImage(
-                model = song.thumbnailUrl?.resize(120),
+        Box(modifier = Modifier.size(52.dp)) {
+            SpatialImage(
+                model = song.thumbnailUrl,
                 contentDescription = null,
-                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(4.dp)),
+                size = ImageSemanticSize.ThumbnailSmall,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
             if (isPlaying) {
@@ -1578,23 +2017,36 @@ fun HomeSongListItem(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = song.title,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Normal,
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 color = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
             )
             Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = song.artist,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (song.isExplicit) {
+                    com.codetrio.spatialflow.ui.components.ExplicitBadge(modifier = Modifier.padding(end = 6.dp))
+                }
+                Text(
+                    text = "${song.artist}${song.duration?.let { " • $it" } ?: ""}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.80f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
         }
-        IconButton(onClick = onMenuClick) {
-            Icon(Icons.Default.MoreVert, "More", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        IconButton(
+            onClick = onMenuClick,
+            modifier = Modifier.size(36.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.MoreVert,
+                contentDescription = "More",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.80f),
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -1819,7 +2271,7 @@ fun OnlineSongBottomSheet(
                     exploreViewModel.addToQueueLast(song)
                     com.codetrio.spatialflow.ui.SnackbarController.showMessage(
                         "Added to queue",
-                        iconVector = androidx.compose.material.icons.Icons.AutoMirrored.Filled.PlaylistAdd
+                        iconVector = Icons.AutoMirrored.Filled.PlaylistAdd
                     )
                     onDismissRequest()
                 },
@@ -1835,20 +2287,24 @@ fun OnlineSongBottomSheet(
                     val id = song.albumId
                     if (!id.isNullOrBlank()) {
                         exploreViewModel.loadAlbum(id)
-                        onDismissRequest()
                     } else {
-                        com.codetrio.spatialflow.ui.SnackbarController.showMessage("Album information unavailable")
+                        exploreViewModel.loadAlbumForSong(
+                            songTitle = song.title,
+                            artistName = song.artist,
+                            albumName = song.albumName,
+                            videoId = song.videoId
+                        )
                     }
+                    onDismissRequest()
                 },
                 Triple("Go to artist", Icons.Default.Person) {
                     val aId = song.artistId
                     if (!aId.isNullOrBlank()) {
                         exploreViewModel.loadArtist(aId)
-                        onDismissRequest()
                     } else {
-                        exploreViewModel.search(song.artist)
-                        onDismissRequest()
+                        exploreViewModel.loadArtistByName(song.artist)
                     }
+                    onDismissRequest()
                 },
                 Triple("View song credits", Icons.Default.Groups) {
                     onViewCreditsClick(song)
@@ -1871,7 +2327,7 @@ fun OnlineSongBottomSheet(
             )
 
             val menuColumns = if (isLandscape) 2 else 1
-            val menuChunks = menuItems.chunked(menuColumns)
+            val menuChunks = remember(menuItems, menuColumns) { menuItems.chunked(menuColumns) }
 
             Column(verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)) {
                 menuChunks.forEachIndexed { chunkIdx, chunk ->
@@ -1934,7 +2390,7 @@ fun CommunityExpressiveCard(
         is SearchItem.Playlist -> item.playlist.author?.name ?: "Community Curator"
     }
     val songCount = when (item) {
-        is SearchItem.Playlist -> item.playlist.songCount?.let { "$it" } ?: ""
+        is SearchItem.Playlist -> item.playlist.songCount?.takeIf { it.isNotBlank() } ?: ""
         else -> ""
     }
     val thumbnailUrl = when (item) {
@@ -1954,170 +2410,297 @@ fun CommunityExpressiveCard(
         is SearchItem.Playlist -> item.playlist.playlistId
     }
 
-    val context = LocalContext.current
-    var bitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    val colors = remember(bitmap) { 
-        if (bitmap != null) {
-            com.codetrio.spatialflow.ui.player.PlayerColorExtractor.extractFromBitmap(id, bitmap) 
-        } else {
-            com.codetrio.spatialflow.ui.player.ExtractedPaletteColors.Default
+    val haptic = LocalHapticFeedback.current
+    val cardInteractionSource = remember { MutableInteractionSource() }
+    val isCardPressed by cardInteractionSource.collectIsPressedAsState()
+
+    val cardScale by animateFloatAsState(
+        targetValue = if (isCardPressed) 0.97f else 1.0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "CardScale"
+    )
+
+    val cardCornerRadius by animateDpAsState(
+        targetValue = if (isCardPressed) 18.dp else 24.dp,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioLowBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "CardCorner"
+    )
+
+    fun handleMainClick() {
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        when (item) {
+            is SearchItem.Song -> onSongClick(item.song)
+            is SearchItem.Album -> onAlbumClick(item.album)
+            is SearchItem.Artist -> onArtistClick(item.artist)
+            is SearchItem.Playlist -> onPlaylistClick(item.playlist)
+            is SearchItem.TopResult, is SearchItem.Header -> {}
         }
     }
-    
-    val fallbackBottomColor = MaterialTheme.colorScheme.surfaceContainerLowest
 
-    Card(
+    Surface(
         modifier = Modifier
-            .width(320.dp)
-            .wrapContentHeight()
-            .padding(vertical = 8.dp),
-        shape = RoundedCornerShape(16.dp),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.05f)),
-        colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+            .widthIn(min = 280.dp, max = 340.dp)
+            .animateContentSize()
+            .graphicsLayer {
+                scaleX = cardScale
+                scaleY = cardScale
+            }
+            .clip(RoundedCornerShape(cardCornerRadius))
+            .clickable(
+                interactionSource = cardInteractionSource,
+                indication = null,
+                onClick = { handleMainClick() }
+            ),
+        shape = RoundedCornerShape(cardCornerRadius),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 2.dp,
+        shadowElevation = 4.dp
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
-                    Brush.verticalGradient(
+                    Brush.radialGradient(
                         colors = listOf(
-                            colors.darkMuted.copy(alpha = 0.9f),
-                            fallbackBottomColor
-                        )
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.20f),
+                            Color.Transparent
+                        ),
+                        center = Offset(0f, 0f),
+                        radius = 450f
                     )
                 )
-                .clickable {
-                    when (item) {
-                        is SearchItem.Song -> onSongClick(item.song)
-                        is SearchItem.Album -> onAlbumClick(item.album)
-                        is SearchItem.Artist -> onArtistClick(item.artist)
-                        is SearchItem.Playlist -> onPlaylistClick(item.playlist)
-                        is SearchItem.TopResult, is SearchItem.Header -> {}
-                    }
-                }
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .animateContentSize()
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Top section: Thumbnail + Title
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    // Image with state listener
-                    AsyncImage(
-                        model = ImageRequest.Builder(context)
-                            .data(thumbnailUrl?.resize(240))
-                            .crossfade(true)
-                            .allowHardware(false) // Needed for palette extraction
-                            .build(),
-                        contentDescription = null,
-                        modifier = Modifier
-                            .size(84.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color.White.copy(alpha = 0.1f)),
-                        contentScale = ContentScale.Crop,
-                        onSuccess = { state ->
-                            val drawable = state.result.drawable
-                            if (drawable is android.graphics.drawable.BitmapDrawable) {
-                                bitmap = drawable.bitmap
-                            }
-                        }
-                    )
-                    
-                    Column(
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text(
-                            text = title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color.White,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = author,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            color = Color.White.copy(alpha = 0.7f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (songCount.isNotBlank()) {
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = songCount,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = Color.White.copy(alpha = 0.6f)
-                            )
-                        }
-                    }
-                }
-                
-                // Bottom action bar
+                // Top Tag Row: Community Pill Badge + Song Count
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        modifier = Modifier
+                            .background(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
+                                shape = CircleShape
+                            )
+                            .padding(horizontal = 9.dp, vertical = 3.dp)
                     ) {
-                        IconButton(
-                            onClick = { onRadioClick(item) },
+                        Icon(
+                            imageVector = Icons.Rounded.Whatshot,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = "Community Pick",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+
+                    if (songCount.isNotBlank()) {
+                        Box(
                             modifier = Modifier
-                                .size(44.dp)
-                                .background(Color.White.copy(alpha = 0.08f), CircleShape)
+                                .background(
+                                    color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.9f),
+                                    shape = CircleShape
+                                )
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
                         ) {
-                            Icon(
-                                painter = androidx.compose.ui.res.painterResource(id = com.codetrio.spatialflow.R.drawable.ic_radio),
-                                contentDescription = "Radio",
-                                tint = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.size(20.dp)
+                            Text(
+                                text = songCount,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        IconButton(
-                            onClick = { onSaveClick(item) },
-                            modifier = Modifier
-                                .size(44.dp)
-                                .background(Color.White.copy(alpha = 0.08f), CircleShape)
+                    }
+                }
+
+                // Middle Section: Artwork + Title + Curator Info
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    SpatialImage(
+                        model = thumbnailUrl,
+                        contentDescription = title,
+                        size = ImageSemanticSize.ThumbnailMedium,
+                        shape = RoundedCornerShape(18.dp),
+                        allowHardware = false,
+                        modifier = Modifier
+                            .size(86.dp)
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                        contentScale = ContentScale.Crop
+                    )
+
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = title,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Rounded.BookmarkBorder, 
-                                contentDescription = "Save",
-                                tint = Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.size(22.dp)
+                                imageVector = Icons.Rounded.Person,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = author.ifBlank { "Community Curator" },
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                // Bottom Action Bar: Hero Play Button + Tonal Radio & Save Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Hero Play Button with Spring Shape Morphing
+                    val playInteractionSource = remember { MutableInteractionSource() }
+                    val isPlayPressed by playInteractionSource.collectIsPressedAsState()
+                    val playCorner by animateDpAsState(
+                        targetValue = if (isPlayPressed) 8.dp else 16.dp,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMedium
+                        ),
+                        label = "PlayCornerMorph"
+                    )
+
+                    Button(
+                        onClick = { handleMainClick() },
+                        interactionSource = playInteractionSource,
+                        shape = RoundedCornerShape(playCorner),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ),
+                        contentPadding = PaddingValues(horizontal = 18.dp, vertical = 0.dp),
+                        modifier = Modifier
+                            .height(42.dp)
+                            .weight(1f)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.PlayArrow,
+                                contentDescription = "Play",
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "Play",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold
                             )
                         }
                     }
 
-                    IconButton(
-                        onClick = {
-                            when (item) {
-                                is SearchItem.Song -> onSongClick(item.song)
-                                is SearchItem.Playlist -> onPlaylistClick(item.playlist)
-                                is SearchItem.Album -> onAlbumClick(item.album)
-                                is SearchItem.Artist -> onArtistClick(item.artist)
-                                is SearchItem.Header, is SearchItem.TopResult -> {}
-                            }
-                        },
-                        modifier = Modifier
-                            .size(56.dp)
-                            .background(colors.vibrant, CircleShape)
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    // Secondary Tonal Actions
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Rounded.PlayArrow, 
-                            contentDescription = "Play",
-                            tint = Color.White,
-                            modifier = Modifier.size(32.dp)
+                        val radioInteractionSource = remember { MutableInteractionSource() }
+                        val isRadioPressed by radioInteractionSource.collectIsPressedAsState()
+                        val radioCorner by animateDpAsState(
+                            targetValue = if (isRadioPressed) 8.dp else 14.dp,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessMedium
+                            ),
+                            label = "RadioCornerMorph"
                         )
+
+                        FilledTonalIconButton(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onRadioClick(item)
+                            },
+                            interactionSource = radioInteractionSource,
+                            shape = RoundedCornerShape(radioCorner),
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Icon(
+                                painter = painterResource(id = com.codetrio.spatialflow.R.drawable.ic_radio),
+                                contentDescription = "Start Radio",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        val saveInteractionSource = remember { MutableInteractionSource() }
+                        val isSavePressed by saveInteractionSource.collectIsPressedAsState()
+                        val saveCorner by animateDpAsState(
+                            targetValue = if (isSavePressed) 8.dp else 14.dp,
+                            animationSpec = spring(
+                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                stiffness = Spring.StiffnessMedium
+                            ),
+                            label = "SaveCornerMorph"
+                        )
+
+                        FilledTonalIconButton(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                onSaveClick(item)
+                            },
+                            interactionSource = saveInteractionSource,
+                            shape = RoundedCornerShape(saveCorner),
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            modifier = Modifier.size(42.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.BookmarkBorder,
+                                contentDescription = "Save to Library",
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }

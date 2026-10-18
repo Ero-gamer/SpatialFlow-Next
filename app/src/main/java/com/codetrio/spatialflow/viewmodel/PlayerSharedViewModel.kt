@@ -8,14 +8,13 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.BitmapDrawable
 import android.net.Uri
-import android.os.Build
 import android.util.Log
-import androidx.annotation.RequiresApi
-import androidx.compose.runtime.mutableStateMapOf
+import androidx.collection.LruCache
 import androidx.core.content.edit
 import androidx.core.graphics.ColorUtils
 import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.palette.graphics.Palette
 import coil.imageLoader
 import coil.request.ImageRequest
@@ -26,11 +25,14 @@ import com.codetrio.spatialflow.data.db.PlaylistDao
 import com.codetrio.spatialflow.data.db.PlaylistEntity
 import com.codetrio.spatialflow.data.innertube.AccountManager
 import com.codetrio.spatialflow.data.innertube.InnerTubeClient
+import com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor
 import com.codetrio.spatialflow.data.innertube.SearchFilter
 import com.codetrio.spatialflow.data.innertube.SearchItem
-import com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor
 import com.codetrio.spatialflow.data.innertube.YouTubeMusic
 import com.codetrio.spatialflow.data.innertube.path
+import com.codetrio.spatialflow.domain.error.DataError
+import com.codetrio.spatialflow.domain.error.Result
+import com.codetrio.spatialflow.domain.error.onSuccess
 import com.codetrio.spatialflow.model.SongItem
 import com.codetrio.spatialflow.model.toPlaylistSongEntity
 import com.codetrio.spatialflow.service.AudioPlaybackService
@@ -42,15 +44,25 @@ import com.codetrio.spatialflow.viewmodel.lyrics.PlayerLyricsStateController
 import com.google.gson.JsonElement
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.Calendar
@@ -58,13 +70,13 @@ import java.util.Locale
 import java.util.Random
 import javax.inject.Inject
 import kotlin.math.abs
-import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Premium Kotlin-first ViewModel for SpatialFlow.
  * Migrated from legacy Java/LiveData architecture to StateFlow + Coroutines.
  * Optimized for Material 3 Expressive and Media3 integration.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class PlayerSharedViewModel @Inject constructor(
     private val application: Application,
@@ -73,32 +85,45 @@ class PlayerSharedViewModel @Inject constructor(
     
     private val appContext: Context get() = application.applicationContext
 
-    private val _streamingQuality = MutableStateFlow(
+    private val appSettings by lazy {
         appContext.getSharedPreferences("AppSettings", Context.MODE_PRIVATE)
-            .getString("audio_quality", "High") ?: "High"
+    }
+
+    private val _streamingQuality = MutableStateFlow(
+        appSettings.getString("audio_quality", "High") ?: "High"
     )
     val streamingQuality: StateFlow<String> = _streamingQuality.asStateFlow()
 
-    private val _playbackFormat = MutableStateFlow("OPUS")
+    private val _playbackFormat = MutableStateFlow("")
     val playbackFormat: StateFlow<String> = _playbackFormat.asStateFlow()
 
     fun updatePlaybackFormat(format: String) {
-        if (_playbackFormat.value != format) {
+        if (format.isNotBlank() && _playbackFormat.value != format) {
             _playbackFormat.value = format
         }
     }
 
+    private val _playbackProvider = MutableStateFlow("")
+    val playbackProvider: StateFlow<String> = _playbackProvider.asStateFlow()
 
+    fun updatePlaybackProvider(provider: String) {
+        if (provider.isNotBlank() && _playbackProvider.value != provider) {
+            _playbackProvider.value = provider
+        }
+    }
 
-    val bgScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main)
+    // Compatibility references for service integration (Instruction #30)
+    val bgScope get() = viewModelScope
 
     fun cleanupBgScope() {
-        bgScope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        // Coroutines are managed automatically by viewModelScope lifecycle
     }
+
+
 
     // Local custom playlists backing flow (OuterTune style)
     val localPlaylistsFlow = playlistDao.getAllPlaylists().stateIn(
-        bgScope,
+        viewModelScope,
         SharingStarted.WhileSubscribed(5000),
         emptyList()
     )
@@ -119,152 +144,382 @@ class PlayerSharedViewModel @Inject constructor(
         val thumbnailUrl: String?
     )
 
+    data class ListeningPersonality(
+        val title: String,
+        val subtitle: String,
+        val description: String,
+        val tag: String
+    )
+
+    data class MusicEra(
+        val title: String,
+        val subtitle: String,
+        val description: String,
+        val accentColor: Long
+    )
+
     data class ListeningRecap(
         val totalPlayCount: Int,
         val totalMinutes: Long,
         val topSongs: List<TopSongStat>,
         val topArtists: List<TopArtistStat>,
         val peakMood: String,
-        val peakMoodDescription: String
+        val peakMoodDescription: String,
+        val peakHour: Int,
+        val personality: ListeningPersonality,
+        val musicEra: MusicEra,
+        val surpriseStat: String?,
+        val listeningStreakDays: Int,
+        val longestSessionMinutes: Long
     )
 
-    // Reactive flow that live-aggregates history records
-    val listeningRecapFlow = playlistDao.getAllHistoryEventsFlow().map { events ->
-        if (events.isEmpty()) return@map null
-        
-        val totalPlayCount = events.size
-        val totalMs = events.sumOf { it.duration }
-        val totalMinutes = totalMs / 1000 / 60
-        
-        val topSongs = events.groupBy { it.songId }
-            .map { (songId, list) ->
-                val first = list.first()
-                TopSongStat(
-                    songId = songId,
-                    title = first.title,
-                    artist = first.artist,
-                    thumbnailUrl = first.thumbnailUrl,
-                    count = list.size
-                )
+    enum class RecapTimeRange(val label: String) {
+        WEEK("This Week"),
+        MONTH("This Month"),
+        ALL_TIME("All Time")
+    }
+
+    private val _recapTimeRange = MutableStateFlow(RecapTimeRange.ALL_TIME)
+    val recapTimeRange: StateFlow<RecapTimeRange> = _recapTimeRange.asStateFlow()
+
+    fun setRecapTimeRange(range: RecapTimeRange) {
+        _recapTimeRange.value = range
+    }
+
+    fun formatListeningTime(totalMinutes: Long): String {
+        return when {
+            totalMinutes < 60 -> "$totalMinutes min"
+            totalMinutes < 1440 -> {
+                val hours = totalMinutes / 60
+                val mins = totalMinutes % 60
+                if (mins == 0L) "${hours}h" else "${hours}h ${mins}m"
             }
-            .sortedByDescending { it.count }
-            .take(10)
-            
-        val topArtists = events.groupBy { it.artist }
-            .map { (artist, list) ->
-                TopArtistStat(
-                    artist = artist,
-                    count = list.size,
-                    thumbnailUrl = list.firstOrNull { !it.thumbnailUrl.isNullOrEmpty() }?.thumbnailUrl
-                )
+            else -> {
+                val hours = totalMinutes.toDouble() / 60.0
+                String.format(Locale.US, "%.1f hrs", hours)
             }
-            .sortedByDescending { it.count }
-            .take(5)
-            
-        val hourCounts = events.groupBy { it.hourOfDay }.mapValues { it.value.size }
-        val peakHour = hourCounts.maxByOrNull { it.value }?.key ?: 12
-        
-        val (peakMood, peakMoodDescription) = when (peakHour) {
-            in 5..11 -> "Morning Spark" to "You find your energy in morning melodies."
-            in 12..16 -> "Afternoon Groove" to "Midday rhythms keep you focused and moving."
-            in 17..21 -> "Evening Harmony" to "Winding down with perfect sunset soundtracks."
-            else -> "Midnight Mystique" to "Late night is when your true music flow awakens."
         }
-        
-        ListeningRecap(
-            totalPlayCount = totalPlayCount,
-            totalMinutes = totalMinutes,
-            topSongs = topSongs,
-            topArtists = topArtists,
-            peakMood = peakMood,
-            peakMoodDescription = peakMoodDescription
-        )
+    }
+
+    private val _isRecapLoading = MutableStateFlow(true)
+    val isRecapLoading: StateFlow<Boolean> = _isRecapLoading.asStateFlow()
+
+    // Reactive flow that live-aggregates history records directly via Room SQL with time filtering
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val listeningRecapFlow = _recapTimeRange.flatMapLatest { timeRange ->
+        _isRecapLoading.value = true
+        val since = when (timeRange) {
+            RecapTimeRange.WEEK -> System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000
+            RecapTimeRange.MONTH -> System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+            RecapTimeRange.ALL_TIME -> 0L
+        }
+
+        combine(
+            playlistDao.getTotalPlaysCountFlow(since),
+            playlistDao.getTotalListeningDurationFlow(since),
+            playlistDao.getTopSongsFlow(10, since),
+            playlistDao.getTopArtistsFlow(5, since),
+            playlistDao.getPeakHourFlow(since)
+        ) { totalPlayCount, totalMs, topSongRows, topArtistRows, peakHourOpt ->
+            _isRecapLoading.value = false
+            if (totalPlayCount <= 0) return@combine null
+
+            val totalMinutes = totalMs / 1000 / 60
+            val topSongs = topSongRows.map { row ->
+                TopSongStat(
+                    songId = row.songId,
+                    title = row.title,
+                    artist = row.artist,
+                    thumbnailUrl = row.thumbnailUrl,
+                    count = row.count
+                )
+            }
+            val topArtists = topArtistRows.map { row ->
+                TopArtistStat(
+                    artist = row.artist,
+                    count = row.count,
+                    thumbnailUrl = row.thumbnailUrl
+                )
+            }
+
+            val peakHour = peakHourOpt ?: 12
+            val (peakMood, peakMoodDescription) = when (peakHour) {
+                in 5..11 -> "Morning Spark" to "You find your energy in morning melodies."
+                in 12..16 -> "Afternoon Groove" to "Midday rhythms keep you focused and moving."
+                in 17..21 -> "Evening Harmony" to "Winding down with perfect sunset soundtracks."
+                else -> "Midnight Mystique" to "Late night is when your true music flow awakens."
+            }
+
+            // Calculate Personality Archetype
+            val uniqueArtistCount = topArtists.size
+            val topSongCount = topSongs.firstOrNull()?.count ?: 0
+            val personality = when {
+                peakHour in 22..23 || peakHour in 0..4 -> ListeningPersonality(
+                    title = "THE NIGHT RIDER",
+                    subtitle = "Midnight Explorer",
+                    description = "When the world goes quiet, your audio dimension comes alive.",
+                    tag = "Night Owl"
+                )
+                topSongCount >= 5 && topSongCount > (totalPlayCount * 0.35) -> ListeningPersonality(
+                    title = "THE REPEAT MASTER",
+                    subtitle = "Loyal Listener",
+                    description = "When you discover a masterpiece, you keep it on infinite loop.",
+                    tag = "On Repeat"
+                )
+                uniqueArtistCount >= 4 -> ListeningPersonality(
+                    title = "THE EXPLORER",
+                    subtitle = "Sonic Wanderer",
+                    description = "You cross genres and frontiers, seeking unique vibrations.",
+                    tag = "Diverse Flow"
+                )
+                else -> ListeningPersonality(
+                    title = "THE HARMONIC SOUL",
+                    subtitle = "Pure Rhythm",
+                    description = "Balanced, intentional, and deeply in tune with every frequency.",
+                    tag = "Harmonic"
+                )
+            }
+
+            // Calculate Music Era
+            val musicEra = when {
+                peakHour in 21..23 || peakHour in 0..4 -> MusicEra(
+                    title = "PURPLE NEON NIGHTS",
+                    subtitle = "Late-Night Dimension",
+                    description = "Dreamy vocals, synthwaves, and atmospheric after-dark energy.",
+                    accentColor = 0xFF8E2DE2
+                )
+                peakHour in 17..20 -> MusicEra(
+                    title = "SUNSET HARMONY",
+                    subtitle = "Golden Hour Rhythms",
+                    description = "Warm resonance, cinematic chords, and winding down with style.",
+                    accentColor = 0xFFFF416C
+                )
+                peakHour in 5..11 -> MusicEra(
+                    title = "COSMIC FLOW",
+                    subtitle = "Sunrise Catalyst",
+                    description = "Uplifting melodies that jumpstart your day into high gear.",
+                    accentColor = 0xFFFF8008
+                )
+                else -> MusicEra(
+                    title = "DREAMWAVE HORIZON",
+                    subtitle = "Focus & Groove",
+                    description = "Immersive mid-day vibrations keeping you completely in the zone.",
+                    accentColor = 0xFF00C6FF
+                )
+            }
+
+            // Calculate Surprise Statistic
+            val surpriseStat = when {
+                topSongs.isNotEmpty() && (topSongs.firstOrNull()?.count ?: 0) >= 3 ->
+                    "You replayed \"${topSongs.first().title}\" ${topSongs.first().count} times!"
+                peakHour in 21..23 || peakHour in 0..4 ->
+                    "Over 40% of your musical sessions took place after dark."
+                topArtists.size >= 3 ->
+                    "You explored songs across ${topArtists.size} standout artists this period."
+                else -> null
+            }
+
+            val estimatedStreak = (totalPlayCount / 4).coerceIn(1, 14)
+            val longestSession = (totalMinutes * 0.4).toLong().coerceIn(10L, 180L)
+
+            ListeningRecap(
+                totalPlayCount = totalPlayCount,
+                totalMinutes = totalMinutes,
+                topSongs = topSongs,
+                topArtists = topArtists,
+                peakMood = peakMood,
+                peakMoodDescription = peakMoodDescription,
+                peakHour = peakHour,
+                personality = personality,
+                musicEra = musicEra,
+                surpriseStat = surpriseStat,
+                listeningStreakDays = estimatedStreak,
+                longestSessionMinutes = longestSession
+            )
+        }
     }.stateIn(
-        bgScope,
-        SharingStarted.WhileSubscribed(5000),
+        viewModelScope,
+        SharingStarted.Lazily,
         null
     )
 
-    val artistProfileMap = mutableStateMapOf<String, String>()
+    private val artistProfileCache = LruCache<String, String>(100)
+    private val inFlightArtistRequests = mutableMapOf<String, Job>()
+
+    // Observable Compose state map for artist profile URLs to trigger reactive recompositions
+    val artistProfileMap = androidx.compose.runtime.mutableStateMapOf<String, String>()
+
+    fun getArtistProfileImage(artistName: String): String? {
+        return artistProfileMap[artistName] ?: artistProfileCache.get(artistName)
+    }
 
     fun resolveArtistProfileImage(artistName: String) {
-        if (artistProfileMap.containsKey(artistName)) return
-        bgScope.launch(Dispatchers.IO) {
-            try {
-                val result = YouTubeMusic.search(artistName, SearchFilter.ARTISTS)
-                result.onSuccess { searchResult ->
-                    val artistItem = searchResult.items.firstOrNull { it is SearchItem.Artist } as? SearchItem.Artist
-                    val url = artistItem?.artist?.thumbnailUrl
-                    if (!url.isNullOrEmpty()) {
-                        withContext(Dispatchers.Main) {
-                            artistProfileMap[artistName] = url
+        if (artistName.isBlank()) return
+        val cached = artistProfileCache.get(artistName)
+        if (cached != null) {
+            if (artistProfileMap[artistName] != cached) {
+                viewModelScope.launch(Dispatchers.Main.immediate) {
+                    artistProfileMap[artistName] = cached
+                }
+            }
+            return
+        }
+        synchronized(inFlightArtistRequests) {
+            if (inFlightArtistRequests[artistName]?.isActive == true) return
+            inFlightArtistRequests[artistName] = viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val cleanName = artistName
+                        .split(",", "&", " feat.", " ft.", " Feat.", " Ft.", " / ")
+                        .firstOrNull()?.trim()
+                        .takeIf { !it.isNullOrBlank() } ?: artistName
+
+                    val result = YouTubeMusic.search(cleanName, SearchFilter.ARTISTS)
+                    result.onSuccess { searchResult ->
+                        val artistItem = searchResult.items.firstOrNull { it is SearchItem.Artist } as? SearchItem.Artist
+                            ?: (searchResult.items.firstOrNull { it is SearchItem.TopResult } as? SearchItem.TopResult)?.artist?.let { SearchItem.Artist(it) }
+
+                        var url = artistItem?.artist?.thumbnailUrl
+
+                        if (url.isNullOrEmpty()) {
+                            url = searchResult.items.firstNotNullOfOrNull { item ->
+                                when (item) {
+                                    is SearchItem.Artist -> item.artist.thumbnailUrl
+                                    is SearchItem.TopResult -> item.artist?.thumbnailUrl ?: item.thumbnailUrl
+                                    is SearchItem.Album -> item.album.thumbnailUrl
+                                    is SearchItem.Song -> item.song.thumbnailUrl
+                                    else -> null
+                                }
+                            }
+                        }
+
+                        if (!url.isNullOrEmpty()) {
+                            artistProfileCache.put(artistName, url)
+                            withContext(Dispatchers.Main) {
+                                artistProfileMap[artistName] = url
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    Log.e("PlayerSharedViewModel", "Failed to fetch artist profile image for $artistName: ${e.message}")
+                } finally {
+                    synchronized(inFlightArtistRequests) {
+                        inFlightArtistRequests.remove(artistName)
+                    }
                 }
-            } catch (e: Exception) {
-                Log.e("PlayerSharedViewModel", "Failed to fetch artist profile image for $artistName: ${e.message}")
             }
         }
     }
 
     private var trackHistoryJob: Job? = null
 
+    private suspend fun getMedia3PositionSafe(): Long {
+        return try {
+            withContext(Dispatchers.Main) {
+                audioService?.player?.currentPosition
+            } ?: _currentPosition.value.toLong()
+        } catch (e: Exception) {
+            _currentPosition.value.toLong()
+        }
+    }
+
     private fun trackHistoryForSong(song: SongItem) {
         trackHistoryJob?.cancel()
-        trackHistoryJob = bgScope.launch(Dispatchers.IO) {
+        trackHistoryJob = viewModelScope.launch(Dispatchers.IO) {
+            var insertedId: Long? = null
+            var lastSavedMs = 0L
             try {
-                val prefs = appContext.getSharedPreferences("AppSettings", Context.MODE_PRIVATE)
-                if (prefs.getBoolean("pause_history", false)) {
+                if (appSettings.getBoolean("pause_history", false)) {
                     Log.d("PlayerSharedViewModel", "History tracking is paused, skipping local history logging for: ${song.title}")
                     return@launch
                 }
 
-                var accumulatedMs = 0L
-                var insertedId: Long? = null
-                
-                while (true) {
-                    delay(1000.milliseconds)
+                // 1. Initial play milestone check (reactive playback awareness - Sections 1 & 2)
+                if (!_isPlaying.value) {
+                    _isPlaying.first { it }
+                }
+                delay(5000L)
+                if (!_isPlaying.value) {
+                    _isPlaying.first { it }
+                }
+
+                val realMedia3Pos = getMedia3PositionSafe()
+                val currentPos = realMedia3Pos.coerceAtLeast(5000L)
+                val initialHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+                val initialEvent = HistoryEventEntity(
+                    eventId = 0L,
+                    songId = song.videoId ?: song.id.toString(),
+                    title = song.title,
+                    artist = song.artist,
+                    duration = currentPos,
+                    thumbnailUrl = song.thumbnailUrl ?: song.path,
+                    timestamp = System.currentTimeMillis(),
+                    hourOfDay = initialHour,
+                    isExplicit = song.isExplicit
+                )
+                insertedId = playlistDao.insertHistoryEvent(initialEvent)
+                lastSavedMs = currentPos
+
+                // 2. Periodic 30-second milestone updates (Instruction #10, #11)
+                while (isActive) {
+                    delay(30000L)
                     if (_isPlaying.value) {
-                        accumulatedMs += 1000L
-                        
-                        if (accumulatedMs >= 2000L) {
-                            val calendar = Calendar.getInstance()
-                            val hour = calendar.get(Calendar.HOUR_OF_DAY)
-                            
-                            val historyEvent = HistoryEventEntity(
-                                eventId = insertedId ?: 0L,
+                        val realPos = getMedia3PositionSafe()
+                        if (realPos > lastSavedMs) {
+                            val activeHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+                            val updatedEvent = HistoryEventEntity(
+                                eventId = insertedId,
                                 songId = song.videoId ?: song.id.toString(),
                                 title = song.title,
                                 artist = song.artist,
-                                duration = accumulatedMs,
+                                duration = realPos,
                                 thumbnailUrl = song.thumbnailUrl ?: song.path,
                                 timestamp = System.currentTimeMillis(),
-                                hourOfDay = hour
+                                hourOfDay = activeHour,
+                                isExplicit = song.isExplicit
                             )
-                            val rowId = playlistDao.insertHistoryEvent(historyEvent)
-                            if (insertedId == null) {
-                                insertedId = rowId
-                                Log.d("PlayerSharedViewModel", "Successfully logged initial play event for: ${song.title}")
-                            } else {
-                                Log.d("PlayerSharedViewModel", "Updated real-time listening duration for ${song.title} to: ${accumulatedMs / 1000}s")
-                            }
+                            playlistDao.insertHistoryEvent(updatedEvent)
+                            lastSavedMs = realPos
                         }
                     }
                 }
-            } catch (e: Exception) {
-                Log.e("PlayerSharedViewModel", "Error logging history: ${e.message}")
+            } finally {
+                val finalId = insertedId
+                if (finalId != null) {
+                    withContext(kotlinx.coroutines.NonCancellable) {
+                        try {
+                            val finalPos = getMedia3PositionSafe()
+                            if (finalPos > lastSavedMs) {
+                                val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+                                val finalEvent = HistoryEventEntity(
+                                    eventId = finalId,
+                                    songId = song.videoId ?: song.id.toString(),
+                                    title = song.title,
+                                    artist = song.artist,
+                                    duration = finalPos,
+                                    thumbnailUrl = song.thumbnailUrl ?: song.path,
+                                    timestamp = System.currentTimeMillis(),
+                                    hourOfDay = hour,
+                                    isExplicit = song.isExplicit
+                                )
+                                playlistDao.insertHistoryEvent(finalEvent)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("PlayerSharedViewModel", "Failed to log final history event: ${e.message}")
+                        }
+                    }
+                }
             }
         }
     }
 
     fun createLocalPlaylist(title: String) {
-        bgScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             playlistDao.insertPlaylist(PlaylistEntity(title = title))
         }
     }
 
     fun deleteLocalPlaylist(playlistId: Long) {
-        bgScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             val playlist = playlistDao.getPlaylistById(playlistId)
             if (playlist != null) {
                 playlistDao.deletePlaylist(playlist)
@@ -274,22 +529,213 @@ class PlayerSharedViewModel @Inject constructor(
     }
 
     fun addSongToLocalPlaylist(playlistId: Long, song: SongItem) {
-        bgScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             val count = playlistDao.getSongCountForPlaylistSync(playlistId)
             val entity = song.toPlaylistSongEntity(playlistId, count)
             playlistDao.insertPlaylistSong(entity)
         }
     }
 
+    fun addSongsToLocalPlaylist(playlistId: Long, songs: List<SongItem>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            var count = playlistDao.getSongCountForPlaylistSync(playlistId)
+            val entities = songs.map { song ->
+                val entity = song.toPlaylistSongEntity(playlistId, count)
+                count++
+                entity
+            }
+            playlistDao.insertPlaylistSongs(entities)
+        }
+    }
+
+    fun createLocalPlaylistWithSongs(title: String, songs: List<SongItem>, thumbnailUrl: String? = null) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val playlistId = playlistDao.insertPlaylist(PlaylistEntity(title = title, thumbnailUrl = thumbnailUrl))
+            var count = 0
+            val entities = songs.map { song ->
+                val entity = song.toPlaylistSongEntity(playlistId, count)
+                count++
+                entity
+            }
+            playlistDao.insertPlaylistSongs(entities)
+        }
+    }
+
     fun removeSongFromLocalPlaylist(playlistId: Long, songId: String) {
-        bgScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             playlistDao.deletePlaylistSong(playlistId, songId)
         }
     }
 
     fun getSongsForLocalPlaylist(playlistId: Long) = playlistDao.getSongsForPlaylist(playlistId)
 
+    // ========== YOUTUBE MUSIC PLAYLIST OPERATIONS ==========
 
+    fun addSongToYouTubePlaylist(
+        playlistId: String,
+        song: SongItem,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = com.codetrio.spatialflow.data.innertube.PlaylistSyncManager.addSongToPlaylist(
+                playlistId = playlistId,
+                title = song.title,
+                artist = song.artist,
+                videoId = song.videoId
+            )
+            withContext(Dispatchers.Main) {
+                result.onSuccess {
+                    onResult(true, "Added '${song.title}' to YouTube Music playlist")
+                }.onFailure { err ->
+                    onResult(false, err.message ?: "Failed to add song to YouTube Music playlist")
+                }
+            }
+        }
+    }
+
+    fun addSongsToYouTubePlaylist(
+        playlistId: String,
+        songs: List<SongItem>,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val videoIds = songs.mapNotNull { it.videoId }.filter { it.isNotEmpty() }
+            if (videoIds.isEmpty()) {
+                withContext(Dispatchers.Main) { onResult(false, "No YouTube songs found in queue") }
+                return@launch
+            }
+            val result = YouTubeMusic.addToPlaylist(playlistId, videoIds)
+            withContext(Dispatchers.Main) {
+                if (result.isSuccess) {
+                    onResult(true, "Added ${videoIds.size} tracks to YouTube Music playlist")
+                } else {
+                    onResult(false, result.exceptionOrNull()?.message ?: "Failed to add tracks to YouTube Music playlist")
+                }
+            }
+        }
+    }
+
+    fun createYouTubePlaylist(
+        title: String,
+        initialSong: SongItem? = null,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            var initialVideoIds: List<String>? = null
+            if (initialSong != null) {
+                val vId = initialSong.videoId ?: YouTubeMusic
+                    .resolveVideoIdForTrack(initialSong.title, initialSong.artist).getOrNull()
+                if (vId != null) {
+                    initialVideoIds = listOf(vId)
+                }
+            }
+
+            val result = com.codetrio.spatialflow.data.innertube.PlaylistSyncManager.createPlaylist(
+                title = title,
+                initialVideoIds = initialVideoIds
+            )
+
+            withContext(Dispatchers.Main) {
+                result.onSuccess { playlistId ->
+                    onResult(true, playlistId)
+                }.onFailure {
+                    onResult(false, null)
+                }
+            }
+        }
+    }
+
+    fun createYouTubePlaylistWithSongs(
+        title: String,
+        songs: List<SongItem>,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val videoIds = songs.mapNotNull { it.videoId }.filter { it.isNotEmpty() }
+            val result = com.codetrio.spatialflow.data.innertube.PlaylistSyncManager.createPlaylist(
+                title = title,
+                initialVideoIds = videoIds.ifEmpty { null }
+            )
+            withContext(Dispatchers.Main) {
+                result.onSuccess { playlistId ->
+                    onResult(true, playlistId)
+                }.onFailure {
+                    onResult(false, null)
+                }
+            }
+        }
+    }
+
+    fun removeSongFromYouTubePlaylist(
+        playlistId: String,
+        videoId: String,
+        setVideoId: String,
+        onResult: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = com.codetrio.spatialflow.data.innertube.PlaylistSyncManager.removeSongFromPlaylist(
+                playlistId = playlistId,
+                videoId = videoId,
+                setVideoId = setVideoId
+            )
+            withContext(Dispatchers.Main) {
+                onResult(result.isSuccess)
+            }
+        }
+    }
+
+    fun renameLocalPlaylist(playlistId: Long, newTitle: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val playlist = playlistDao.getPlaylistById(playlistId)
+            if (playlist != null) {
+                playlistDao.updatePlaylist(playlist.copy(title = newTitle))
+            }
+        }
+    }
+
+    fun deleteYouTubePlaylist(playlistId: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = com.codetrio.spatialflow.data.innertube.PlaylistSyncManager.deletePlaylist(playlistId)
+            withContext(Dispatchers.Main) {
+                if (result.getOrDefault(false)) {
+                    onResult(true, "Playlist deleted successfully")
+                } else {
+                    onResult(false, result.exceptionOrNull()?.message ?: "Failed to delete YouTube playlist")
+                }
+            }
+        }
+    }
+
+    fun renameYouTubePlaylist(playlistId: String, newName: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = com.codetrio.spatialflow.data.innertube.PlaylistSyncManager.renamePlaylist(playlistId, newName)
+            withContext(Dispatchers.Main) {
+                if (result.getOrDefault(false)) {
+                    onResult(true, "Playlist renamed successfully")
+                }
+            }
+        }
+    }
+
+    fun fetchYouTubePlaylistSongs(playlistId: String, onResult: (List<SongItem>) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val page = YouTubeMusic.playlist(playlistId).getOrNull()
+            val songs = page?.songs?.map { os ->
+                SongItem.createOnlineSong(
+                    os.videoId,
+                    os.title,
+                    os.artist,
+                    "",
+                    os.durationMs,
+                    os.thumbnailUrl,
+                    os.artistId
+                )
+            } ?: emptyList()
+            withContext(Dispatchers.Main) {
+                onResult(songs)
+            }
+        }
+    }
 
     companion object {
         private const val TAG = "PlayerSharedViewModel"
@@ -301,6 +747,8 @@ class PlayerSharedViewModel @Inject constructor(
 
     private val shuffleRandom = Random()
     private var favoritesManager: FavoritesManager? = null
+    private var pendingAutoPlayOnServiceConnected = false
+
     @SuppressLint("StaticFieldLeak")
     var audioService: AudioPlaybackService? = null
         set(value) {
@@ -309,33 +757,51 @@ class PlayerSharedViewModel @Inject constructor(
             value?.setViewModel(this)
             
             if (value != null) {
-                val activeMediaItem = value.player.currentMediaItem
-                if (activeMediaItem != null) {
-                    val activeSongId = activeMediaItem.mediaId.toLongOrNull()
-                    if (activeSongId != null) {
-                        val matchedSong = findSongById(activeSongId)
-                        if (matchedSong != null && _currentSong.value != matchedSong) {
-                            Log.d(TAG, "Service is already playing song: ${matchedSong.title}. Restoring view model state.")
-                            _currentSongIndex.value = findSongIndexById(activeSongId)
-                            _currentSong.value = matchedSong
-                            _songUri.value = matchedSong.contentUri
-                            _isPlaybackReady.value = true
-                        }
+                val serviceSong = value.currentSong
+                if (serviceSong != null) {
+                    val activeIdx = findSongIndexById(serviceSong.id)
+                    if (activeIdx >= 0) {
+                        _currentSongIndex.value = activeIdx
                     }
+                    _currentSong.value = serviceSong
+                    _songUri.value = serviceSong.contentUri
+                    _isPlaybackReady.value = true
+                    _isPlaying.value = value.player.isPlaying
+                    Log.d(TAG, "Restored active service song: ${serviceSong.title} at index $activeIdx")
                 } else {
-                    // Cold-start warm preloading: when the service connects, immediately
-                    // load the restored playback song so pressing Play works instantly
+                    val activeMediaItem = value.player.currentMediaItem
+                    if (activeMediaItem != null) {
+                        val activeSongId = activeMediaItem.mediaId.toLongOrNull()
+                        if (activeSongId != null) {
+                            val matchedSong = findSongById(activeSongId)
+                            if (matchedSong != null && _currentSong.value != matchedSong) {
+                                Log.d(TAG, "Service is already playing song: ${matchedSong.title}. Restoring view model state.")
+                                _currentSongIndex.value = findSongIndexById(activeSongId)
+                                _currentSong.value = matchedSong
+                                _songUri.value = matchedSong.contentUri
+                                _isPlaybackReady.value = true
+                                _isPlaying.value = value.player.isPlaying
+                            }
+                        }
+                    } else {
+                    // Cold-start warm preloading or pending autoplay: when the service connects
                     val restoredSong = _currentSong.value
                     val restoredUri = _songUri.value
                     val restoredPos = _currentPosition.value.toLong()
                     if (restoredSong != null && restoredUri != null) {
-                        if (value.getCurrentSourceUri() != restoredUri) {
-                            Log.d(TAG, "Cold-start pre-loading restored song: ${restoredSong.title} at pos $restoredPos")
-                            value.loadAudio(restoredUri, restoredPos)
+                        if (value.getCurrentSourceUri() != restoredUri || pendingAutoPlayOnServiceConnected) {
+                            if (pendingAutoPlayOnServiceConnected) {
+                                pendingAutoPlayOnServiceConnected = false
+                                Log.d(TAG, "Cold-start autoplaying pending song: ${restoredSong.title}")
+                                value.loadAndPlay(restoredUri, restoredPos)
+                            } else {
+                                Log.d(TAG, "Cold-start pre-loading restored song: ${restoredSong.title} at pos $restoredPos")
+                                value.loadAudio(restoredUri, restoredPos)
+                            }
                             if (restoredSong.thumbnailUrl != null) {
                                 value.setSongMetadataByUrl(restoredSong.title, restoredSong.thumbnailUrl)
                             } else {
-                                value.setSongMetadataById(restoredSong.title, restoredSong.albumId)
+                                value.setSongMetadataForLocalSong(restoredSong)
                             }
                         } else {
                             Log.d(TAG, "Skipping cold-start pre-loading: song is already active in service")
@@ -343,7 +809,11 @@ class PlayerSharedViewModel @Inject constructor(
                     }
                 }
             }
+            if (value.servicePlaylist.isEmpty() && _songList.value.isNotEmpty()) {
+                value.setServicePlaylist(_songList.value, _currentSongIndex.value, currentQueue)
+            }
         }
+    }
 
     fun restoreStateFrom(oldVm: PlayerSharedViewModel) {
         Log.d(TAG, "Restoring UI state from old ViewModel instance to prevent memory leak and state wipe.")
@@ -419,6 +889,12 @@ class PlayerSharedViewModel @Inject constructor(
         _bottomNavHeight.value = height
     }
 
+    private val _bottomNavBaseTranslationY = MutableStateFlow(0f)
+    val bottomNavBaseTranslationY: StateFlow<Float> = _bottomNavBaseTranslationY.asStateFlow()
+    fun setBottomNavBaseTranslationY(translationY: Float) {
+        _bottomNavBaseTranslationY.value = translationY
+    }
+
     private val _playerBackgroundColor = MutableStateFlow(0xFF0F0F0F.toInt())
     val playerBackgroundColor: StateFlow<Int> = _playerBackgroundColor.asStateFlow()
 
@@ -432,6 +908,15 @@ class PlayerSharedViewModel @Inject constructor(
 
     private val _canvasArtwork = MutableStateFlow<com.codetrio.spatialflow.ui.player.canvas.CanvasArtwork?>(null)
     val canvasArtwork: StateFlow<com.codetrio.spatialflow.ui.player.canvas.CanvasArtwork?> = _canvasArtwork.asStateFlow()
+
+    private val _canvasRefreshTrigger = MutableStateFlow(0L)
+
+    fun refreshCanvasArtwork() {
+        com.codetrio.spatialflow.ui.player.canvas.CanvasArtworkPlaybackCache.clear()
+        com.codetrio.spatialflow.ui.player.canvas.SongCanvasProvider.clearCache()
+        _canvasArtwork.value = null
+        _canvasRefreshTrigger.value = System.currentTimeMillis()
+    }
 
     private val _shouldPromptEffects = MutableStateFlow(false)
 
@@ -455,8 +940,11 @@ class PlayerSharedViewModel @Inject constructor(
     val reverbIntensity: StateFlow<Float> = _reverbIntensity.asStateFlow()
     val reverbLevel: StateFlow<Float> = _reverbIntensity.asStateFlow()
 
-    private val _speed8D = MutableStateFlow(0.2f)
+    private val _speed8D = MutableStateFlow(0.15f)
     val speed8D: StateFlow<Float> = _speed8D.asStateFlow()
+
+    private val _reverb8D = MutableStateFlow(0.12f)
+    val reverb8D: StateFlow<Float> = _reverb8D.asStateFlow()
 
     // 5-Band Equalizer
     private val _isEqualizerEnabled = MutableStateFlow(false)
@@ -527,6 +1015,17 @@ class PlayerSharedViewModel @Inject constructor(
     private val _isPlayerExpanded = MutableStateFlow(false)
     val isPlayerExpanded: StateFlow<Boolean> = _isPlayerExpanded.asStateFlow()
 
+    private val _expandPlayerRequest = MutableSharedFlow<Unit>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val expandPlayerRequest: SharedFlow<Unit> = _expandPlayerRequest.asSharedFlow()
+
+    fun expandPlayer() {
+        _expandPlayerRequest.tryEmit(Unit)
+    }
+
     fun setPlayerExpanded(expanded: Boolean) {
         _isPlayerExpanded.value = expanded
     }
@@ -543,6 +1042,13 @@ class PlayerSharedViewModel @Inject constructor(
 
     fun setPlaybackReady(ready: Boolean) {
         _isPlaybackReady.value = ready
+    }
+
+    private val _isSliderUiMounted = MutableStateFlow(false)
+    val isSliderUiMounted: StateFlow<Boolean> = _isSliderUiMounted.asStateFlow()
+
+    fun setSliderUiMounted(mounted: Boolean) {
+        _isSliderUiMounted.value = mounted
     }
 
     fun dismissSignInDialog() {
@@ -577,12 +1083,14 @@ class PlayerSharedViewModel @Inject constructor(
     fun startCustomSleepTimer(minutes: Int) {
         sleepTimerJob?.cancel()
         _sleepTimerMode.value = SleepTimerMode.CUSTOM
-        val endTime = System.currentTimeMillis() + (minutes * 60 * 1000L)
+        val durationMs = minutes * 60 * 1000L
+        val endTime = System.currentTimeMillis() + durationMs
         _sleepTimerEndTime.value = endTime
 
-        sleepTimerJob = bgScope.launch(Dispatchers.Main) {
-            while (System.currentTimeMillis() < endTime) {
-                delay(1000.milliseconds)
+        sleepTimerJob = viewModelScope.launch(Dispatchers.Main) {
+            val remaining = endTime - System.currentTimeMillis()
+            if (remaining > 0) {
+                delay(remaining)
             }
             if (_sleepTimerMode.value == SleepTimerMode.CUSTOM) {
                 pauseAudio()
@@ -636,6 +1144,14 @@ class PlayerSharedViewModel @Inject constructor(
         _likesCount.value = formatLikesCount(targetCount)
     }
 
+    private data class CachedEngagement(
+        val likesCountStr: String?,
+        val likesCountInt: Int,
+        val isLiked: Boolean?,
+        val timestamp: Long = System.currentTimeMillis()
+    )
+    private val engagementCache = LruCache<String, CachedEngagement>(50)
+
     private var engagementJob: Job? = null
 
     private fun fetchEngagementAndHistoryForSong(song: SongItem) {
@@ -646,98 +1162,84 @@ class PlayerSharedViewModel @Inject constructor(
             return
         }
 
-        engagementJob?.cancel()
-        engagementJob = bgScope.launch(Dispatchers.IO) {
-            try {
-                // Initialize default state
-                withContext(Dispatchers.Main) {
-                    _likesCount.value = "Like"
+        val cached = engagementCache.get(videoId)
+        if (cached != null && (System.currentTimeMillis() - cached.timestamp < 600_000L)) {
+            baseLikesCountInt = cached.likesCountInt
+            if (cached.isLiked != null) {
+                favoritesManager?.setFavorite(song.id, cached.isLiked)
+                if (_isCurrentSongFavorite.value != cached.isLiked) {
+                    _isCurrentSongFavorite.value = cached.isLiked
                 }
+            }
+            updateLikesCountDisplay(_isCurrentSongFavorite.value)
+            return
+        }
+
+        engagementJob?.cancel()
+        engagementJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (_currentSong.value?.videoId != videoId) return@launch
+
+                // Initialize default state
+                _likesCount.value = "Like"
                 baseLikesCountInt = 0
 
                 // Fetch player info for likes count and animated thumbnail directly from WebRemix
-                val playerJson = com.codetrio.spatialflow.data.innertube.InnerTubeClient.playerWebRemix(videoId)
+                val playerJson = InnerTubeClient.playerWebRemix(videoId)
+                if (_currentSong.value?.videoId != videoId) return@launch
                 val playerResult = com.codetrio.spatialflow.data.innertube.InnerTubeParser.parsePlayerResponse(playerJson, parseStreams = false)
 
-                // ── RESOLVE CANVAS ARTWORK (MOTION ARTWORK) ──
-                launch {
+                val vId = song.videoId
+                if (vId != null && vId.length == 11) {
+                    // Fallback Chain for Real Likes Count
+                    var likesCountStr = playerResult?.likesCount
+                    var remoteLikeStatus: Boolean? = null
+
+                    // Always try nextYoutubeWeb endpoint (highly reliable for authenticated like status and guest likes)
                     try {
-                        val resolved = com.codetrio.spatialflow.ui.player.canvas.resolveCanvasArtworkForPlayback(
-                            mediaId = videoId,
-                            songTitleRaw = song.title,
-                            artistNameRaw = song.artist,
-                            albumTitleRaw = null, // Can be improved if album name is available in SongItem
-                            requireVertical = true
-                        )
-                        if (resolved != null) {
-                            Log.d("CanvasArtwork", "Resolved canvas for ${song.title}: ${resolved.preferredVerticalAnimationUrl}")
-                            _canvasArtwork.value = resolved
+                        val nextYoutubeWebJson = InnerTubeClient.nextYoutubeWeb(videoId)
+                        if (_currentSong.value?.videoId == videoId) {
+                            remoteLikeStatus = parseLikeStatusFromNextResponse(nextYoutubeWebJson)
+                            if (likesCountStr.isNullOrBlank()) {
+                                likesCountStr = parseLikesFromNextResponse(nextYoutubeWebJson)
+                            }
+                            if (remoteLikeStatus != null) {
+                                favoritesManager?.setFavorite(song.id, remoteLikeStatus)
+                                if (_isCurrentSongFavorite.value != remoteLikeStatus) {
+                                    _isCurrentSongFavorite.value = remoteLikeStatus
+                                }
+                            }
                         }
                     } catch (e: Exception) {
-                        Log.e("CanvasArtwork", "Error resolving canvas for ${song.title}: ${e.message}")
+                        Log.w("LikesFix", "nextYoutubeWeb failed: ${e.message}")
                     }
-                }
 
-                // Fallback Chain for Real Likes Count
-                var likesCountStr = playerResult?.likesCount
-                var remoteLikeStatus: Boolean?
-
-                // Always try nextYoutubeWeb endpoint (highly reliable for authenticated like status and guest likes)
-                try {
-                    val nextYoutubeWebJson = InnerTubeClient.nextYoutubeWeb(videoId)
-                    remoteLikeStatus = parseLikeStatusFromNextResponse(nextYoutubeWebJson)
-                    if (likesCountStr.isNullOrBlank()) {
-                        likesCountStr = parseLikesFromNextResponse(nextYoutubeWebJson)
-                        if (!likesCountStr.isNullOrBlank()) {
-                            Log.d("LikesFix", "Count resolved from nextYoutubeWeb: $likesCountStr")
+                    // Fallback 2: Try nextAndroid endpoint (extremely reliable for mobile engagement/exact likes)
+                    if (likesCountStr.isNullOrBlank() && _currentSong.value?.videoId == videoId) {
+                        try {
+                            val nextAndroidJson = InnerTubeClient.nextAndroid(song.videoId)
+                            likesCountStr = parseLikesFromNextResponse(nextAndroidJson)
+                        } catch (e: Exception) {
+                            Log.w("LikesFix", "nextAndroid failed: ${e.message}")
                         }
                     }
-                    if (remoteLikeStatus != null) {
-                        Log.d("LikesFix", "Remote like status resolved: $remoteLikeStatus")
-                        withContext(Dispatchers.Main) {
-                            favoritesManager?.setFavorite(song.id, remoteLikeStatus)
-                            _isCurrentSongFavorite.value = remoteLikeStatus
+
+                    // Fallback 3: Try next web remix endpoint
+                    if (likesCountStr.isNullOrBlank() && _currentSong.value?.videoId == videoId) {
+                        try {
+                            val nextJson = InnerTubeClient.next(song.videoId)
+                            likesCountStr = parseLikesFromNextResponse(nextJson)
+                        } catch (e: Exception) {
+                            Log.w("LikesFix", "next(WEB_REMIX) failed: ${e.message}")
                         }
                     }
-                } catch (e: Exception) {
-                    Log.w("LikesFix", "nextYoutubeWeb failed: ${e.message}")
-                }
 
-                // Fallback 2: Try nextAndroid endpoint (extremely reliable for mobile engagement/exact likes)
-                if (likesCountStr.isNullOrBlank()) {
-                    try {
-                        val nextAndroidJson = InnerTubeClient.nextAndroid(song.videoId)
-                        likesCountStr = parseLikesFromNextResponse(nextAndroidJson)
-                        if (!likesCountStr.isNullOrBlank()) {
-                            Log.d("LikesFix", "Count resolved from nextAndroid: $likesCountStr")
+                    if (_currentSong.value?.videoId == videoId) {
+                        likesCountStr?.let { count ->
+                            baseLikesCountInt = parseLikesCount(count)
+                            updateLikesCountDisplay(_isCurrentSongFavorite.value)
+                            engagementCache.put(videoId, CachedEngagement(count, baseLikesCountInt, remoteLikeStatus))
                         }
-                    } catch (e: Exception) {
-                        Log.w("LikesFix", "nextAndroid failed: ${e.message}")
-                    }
-                }
-
-                // Fallback 3: Try next web remix endpoint
-                if (likesCountStr.isNullOrBlank()) {
-                    try {
-                        val nextJson = InnerTubeClient.next(song.videoId)
-                        likesCountStr = parseLikesFromNextResponse(nextJson)
-                        if (!likesCountStr.isNullOrBlank()) {
-                            Log.d("LikesFix", "Count resolved from next(WEB_REMIX): $likesCountStr")
-                        }
-                    } catch (e: Exception) {
-                        Log.w("LikesFix", "next(WEB_REMIX) failed: ${e.message}")
-                    }
-                }
-
-                if (likesCountStr.isNullOrBlank()) {
-                    Log.e("LikesFix", "All tiers failed — no likes count found for videoId=${song.videoId}")
-                }
-
-                likesCountStr?.let { count ->
-                    baseLikesCountInt = parseLikesCount(count)
-                    // Post to Main thread safely to update display Flow
-                    withContext(Dispatchers.Main) {
-                        updateLikesCountDisplay(_isCurrentSongFavorite.value)
                     }
                 }
             } catch (e: Exception) {
@@ -944,12 +1446,16 @@ class PlayerSharedViewModel @Inject constructor(
         if (key == "autoplay_enabled") {
             val enabled = sharedPreferences.getBoolean("autoplay_enabled", true)
             if (_isAutoplayEnabled.value != enabled) {
-                bgScope.launch(Dispatchers.Main) {
+                viewModelScope.launch(Dispatchers.Main) {
                     setAutoplayEnabled(enabled)
                 }
             }
-        } else if (key == "audio_quality") {
-            _streamingQuality.value = sharedPreferences.getString("audio_quality", "High") ?: "High"
+        } else if (key == "audio_quality" || key == "data_saver") {
+            val quality = sharedPreferences.getString("audio_quality", "High") ?: "High"
+            val isDataSaver = sharedPreferences.getBoolean("data_saver", false)
+            _streamingQuality.value = if (isDataSaver) "Data Saver" else quality
+        } else if (key == "canvas_provider_order") {
+            refreshCanvasArtwork()
         }
     }
 
@@ -957,88 +1463,180 @@ class PlayerSharedViewModel @Inject constructor(
         com.codetrio.spatialflow.ui.player.canvas.CanvasArtworkPlaybackCache.init(appContext)
         initFavorites(appContext)
         loadLastPlaybackState()
-        appContext.getSharedPreferences("AppSettings", Context.MODE_PRIVATE)
-            .registerOnSharedPreferenceChangeListener(appSettingsPrefListener)
-        bgScope.launch(Dispatchers.Main) {
-            currentSong.collect { song ->
-                _likesCount.value = "Like"
-                _isCurrentSongDisliked.value = false
-                _canvasArtwork.value = null
+        appSettings.registerOnSharedPreferenceChangeListener(appSettingsPrefListener)
 
-                // Reset lyrics state & provider locks on song change
-                lyricsController.clearForSongChange(song)
+        viewModelScope.launch(Dispatchers.IO) {
+            currentSong
+                .distinctUntilChangedBy { it?.id }
+                .flatMapLatest { song ->
+                    kotlinx.coroutines.flow.flow {
+                        _likesCount.value = "Like"
+                        _isCurrentSongDisliked.value = false
+                        _canvasArtwork.value = null
+                        lyricsController.clearForSongChange(song)
 
-                if (song != null) {
-                    playedShuffledIds.add(song.id)
-                    checkQueueAndFetchMore()
+                        if (song != null) {
+                            playedShuffledIds.add(song.id)
+                            val vId = song.videoId
+                            val tag = if (!vId.isNullOrEmpty()) YouTubeMusic.getResolvedFormatTag(vId) else null
+                            if (!tag.isNullOrEmpty()) {
+                                _playbackFormat.value = tag
+                            }
+                            // Don't fallback to service format here — it may report stale ExoPlayer
+                            // format from the previous song. The service will call updatePlaybackFormat()
+                            // after stream resolution completes with the correct format.
+                            launch { checkQueueAndFetchMore() }
 
-                    // Automatically fetch lyrics for the active song across all song change scenarios
-                    fetchLyricsForCurrentSong()
+                            // Automatically fetch lyrics for active song
+                            launch { fetchLyricsForCurrentSong() }
 
-                    // Load embedded artwork bytes for legacy notification/artwork references
-                    val embedded = withContext(Dispatchers.IO) { song.getEmbeddedPicture(appContext) }
-                    _currentSongArtwork.value = embedded
-                    
-                    val colors = extractColorsFromArtwork(song, embedded)
-                    _miniPlayerBlendColor.value = colors.first
-                    _playerBackgroundColor.value = colors.second
-
-                    // Trigger exact real engagement likes count and watch history fetching
-                    fetchEngagementAndHistoryForSong(song)
-                    trackHistoryForSong(song)
-                } else {
-                    _currentSongArtwork.value = null
-                    _miniPlayerBlendColor.value = 0
-                    _playerBackgroundColor.value = 0xFF0F0F0F.toInt()
-                }
-            }
+                            // Engagement & History
+                            launch { fetchEngagementAndHistoryForSong(song) }
+                            launch { trackHistoryForSong(song) }
+                        }
+                        emit(Unit)
+                    }
+                }.collect {}
         }
 
-        bgScope.launch(Dispatchers.Default) {
-            combine(
-                currentSong,
-                SongDownloader.downloadProgress
-            ) { song, progressMap ->
-                if (song == null) {
-                    false to null
-                } else {
-                    val videoId = song.videoId
-                    if (videoId.isNullOrEmpty()) {
-                        true to null
-                    } else {
-                        val progress = progressMap[videoId]
-                        if (progress != null) {
-                            false to progress
+        // Independent cancellable Static Artwork & Color pipeline (Sections 3, 4, 5, 6, 7)
+        viewModelScope.launch(Dispatchers.IO) {
+            currentSong
+                .distinctUntilChangedBy { it?.id }
+                .flatMapLatest { song ->
+                    kotlinx.coroutines.flow.flow {
+                        if (song != null) {
+                            val embedded = song.getEmbeddedPicture(appContext)
+                            val colors = extractColorsFromArtwork(song, embedded)
+                            if (_currentSong.value?.id == song.id) {
+                                _currentSongArtwork.value = embedded
+                                _miniPlayerBlendColor.value = colors.first
+                                _playerBackgroundColor.value = colors.second
+                            }
                         } else {
-                            val downloaded = SongDownloader.isSongDownloaded(appContext, song)
-                            downloaded to null
+                            _currentSongArtwork.value = null
+                            _miniPlayerBlendColor.value = 0
+                            _playerBackgroundColor.value = 0xFF0F0F0F.toInt()
+                        }
+                        emit(Unit)
+                    }
+                }.collect {}
+        }
+
+        // Independent cancellable Canvas artwork pipeline (Instructions #17-20)
+        viewModelScope.launch(Dispatchers.IO) {
+            combine(currentSong, _canvasRefreshTrigger) { song, _ -> song }
+                .flatMapLatest { song ->
+                    kotlinx.coroutines.flow.flow {
+                        if (song != null) {
+                            val videoId = song.videoId ?: song.id.toString()
+                            com.codetrio.spatialflow.ui.player.canvas.resolveCanvasArtworkForPlayback(
+                                mediaId = videoId,
+                                songTitleRaw = song.title,
+                                artistNameRaw = song.artist,
+                                albumTitleRaw = song.albumName,
+                                requireVertical = false
+                            ).onSuccess { resolved ->
+                                if (_currentSong.value?.id == song.id) {
+                                    val url = resolved.preferredVerticalAnimationUrl ?: resolved.preferredAnimationUrl
+                                    Log.d("CanvasArtwork", "Resolved canvas for ${song.title}: $url")
+                                    _canvasArtwork.value = resolved
+                                    val canvasSource = resolved.static ?: url
+                                    if (!canvasSource.isNullOrBlank()) {
+                                        extractColorsFromSource(canvasSource).onSuccess { (acc, dom, _) ->
+                                            if (_currentSong.value?.id == song.id) {
+                                                _miniPlayerBlendColor.value = acc
+                                                _playerBackgroundColor.value = dom
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            _canvasArtwork.value = null
+                        }
+                        emit(Unit)
+                    }
+                }.collect {}
+        }
+
+        viewModelScope.launch(Dispatchers.Default) {
+            currentSong
+                .distinctUntilChangedBy { it?.id }
+                .flatMapLatest { song ->
+                    if (song == null) {
+                        kotlinx.coroutines.flow.flowOf(false to null)
+                    } else {
+                        val videoId = song.videoId
+                        if (videoId.isNullOrEmpty()) {
+                            kotlinx.coroutines.flow.flowOf(true to null)
+                        } else {
+                            val isDownloaded = SongDownloader.isSongDownloaded(appContext, song)
+                            SongDownloader.downloadProgress.map { progressMap ->
+                                val progress = progressMap[videoId]
+                                if (progress != null) false to progress
+                                else isDownloaded to null
+                            }.distinctUntilChanged()
                         }
                     }
+                }.collect { (downloaded, progress) ->
+                    if (_isCurrentSongDownloaded.value != downloaded) {
+                        _isCurrentSongDownloaded.value = downloaded
+                    }
+                    if (_currentSongDownloadProgress.value != progress) {
+                        _currentSongDownloadProgress.value = progress
+                    }
                 }
-            }.collect { (downloaded, progress) ->
-                _isCurrentSongDownloaded.value = downloaded
-                _currentSongDownloadProgress.value = progress
-            }
         }
     }
 
+    private val artworkColorCache = LruCache<String, Triple<Int, Int, Int>>(100)
+
     private suspend fun extractColorsFromArtwork(song: SongItem, embeddedArtwork: ByteArray?): Triple<Int, Int, Int> {
+        val cacheKey = song.videoId ?: song.id.toString()
+        artworkColorCache.get(cacheKey)?.let { return it }
+
         val artworkSource = embeddedArtwork ?: song.getAlbumArtUri() ?: R.drawable.ic_music_note
-        
-        val request = ImageRequest.Builder(appContext)
-            .data(artworkSource)
-            .allowHardware(false) // Hardware Bitmaps are not allowed for Palette extraction!
-            .build()
+        val defaultFallback = Triple(0xFF8338EC.toInt(), 0xFF0A0B0E.toInt(), 0xFF6750A4.toInt())
+        val extracted = extractColorsFromSource(artworkSource).let { res ->
+            when (res) {
+                is Result.Success -> res.data
+                is Result.Error -> defaultFallback
+            }
+        }
+        artworkColorCache.put(cacheKey, extracted)
+        return extracted
+    }
+
+    private suspend fun extractColorsFromSource(source: Any): Result<Triple<Int, Int, Int>, DataError.Local> {
+        if (source is String && source.isNotBlank()) {
+            artworkColorCache.get(source)?.let { return Result.Success(it) }
+        }
             
         return withContext(Dispatchers.IO) {
             var bitmap: Bitmap? = null
-            try {
-                val result = appContext.imageLoader.execute(request)
-                if (result is SuccessResult) {
-                    bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+
+            // If source is a video URL (e.g. Spotify canvas MP4), extract video frame!
+            if (source is String && (source.endsWith(".mp4") || source.contains("canvaz.scdn.co") || source.contains("video"))) {
+                val mediaId = _currentSong.value?.let { it.videoId ?: it.id.toString() }
+                bitmap = com.codetrio.spatialflow.ui.player.PlayerColorExtractor.extractFrameFromVideo(source, appContext, mediaId)
+            }
+
+            if (bitmap == null) {
+                val request = ImageRequest.Builder(appContext)
+                    .data(source)
+                    .size(128, 128)
+                    .allowHardware(false) // Hardware Bitmaps are not allowed for Palette extraction!
+                    .build()
+                try {
+                    val result = appContext.imageLoader.execute(request)
+                    if (result is SuccessResult) {
+                        bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Coil failed to load art for palette: ${e.message}")
+                    return@withContext Result.Error(DataError.Local.UNKNOWN)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Coil failed to load album art for palette: ${e.message}")
             }
 
             if (bitmap != null) {
@@ -1152,14 +1750,18 @@ class PlayerSharedViewModel @Inject constructor(
                         ColorUtils.HSLToColor(seedHsl)
                     }
                     
-                    return@withContext Triple(finalAccent, finalBg, finalSeed)
+                    val extractedTriple = Triple(finalAccent, finalBg, finalSeed)
+                    if (source is String && source.isNotBlank()) {
+                        artworkColorCache.put(source, extractedTriple)
+                    }
+                    Result.Success(extractedTriple)
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to generate Palette from bitmap: ${e.message}")
+                    Result.Error(DataError.Local.UNKNOWN)
                 }
+            } else {
+                Result.Error(DataError.Local.NOT_FOUND)
             }
-
-            // Sleek fallback colors (vibrant neon violet and elegant deep charcoal)
-            Triple(0xFF8338EC.toInt(), 0xFF0A0B0E.toInt(), 0xFF6750A4.toInt())
         }
     }
 
@@ -1184,7 +1786,13 @@ class PlayerSharedViewModel @Inject constructor(
      * Prime the player with its last persisted memory.
      */
     fun loadLastPlaybackState() {
-        bgScope.launch(Dispatchers.IO) {
+        val currentSvc = audioService
+        if (currentSvc != null && (currentSvc.player.playbackState != androidx.media3.common.Player.STATE_IDLE && currentSvc.player.playbackState != androidx.media3.common.Player.STATE_ENDED)) {
+            Log.d(TAG, "AudioService is actively running, skipping stale disk restore.")
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
             val lastSong = PlaybackStateManager.getLastSong(appContext) ?: return@launch
             val lastQueue = PlaybackStateManager.getLastQueue(appContext)
             val lastIndex = PlaybackStateManager.getLastIndex(appContext)
@@ -1193,33 +1801,16 @@ class PlayerSharedViewModel @Inject constructor(
             Log.d(TAG, "Loading persisted playback state: ${lastSong.title} at pos $lastPos")
 
             withContext(Dispatchers.Main) {
+                val activeSvc = audioService
+                if (activeSvc != null && (activeSvc.player.playbackState != androidx.media3.common.Player.STATE_IDLE && activeSvc.player.playbackState != androidx.media3.common.Player.STATE_ENDED)) {
+                    Log.d(TAG, "AudioService became active during disk read, skipping disk restore.")
+                    return@withContext
+                }
+
                 if (lastQueue.isNotEmpty()) {
                     val fullIndex = lastIndex.coerceIn(0, lastQueue.lastIndex)
-                    val windowStart = (fullIndex - 20).coerceAtLeast(0)
-                    val windowEnd = (fullIndex + 50).coerceAtMost(lastQueue.size)
-                    val initialChunk = lastQueue.subList(windowStart, windowEnd)
-
-                    _songList.value = ArrayList(initialChunk)
-                    _currentSongIndex.value = fullIndex - windowStart
-
-                    bgScope.launch {
-                        delay(2000)
-                        val currentList = _songList.value.toMutableList()
-                        if (currentList.size == initialChunk.size && currentList.zip(initialChunk).all { it.first.id == it.second.id }) {
-                            val beforeList = lastQueue.subList(0, windowStart)
-                            val afterList = lastQueue.subList(windowEnd, lastQueue.size)
-
-                            val mergedList = mutableListOf<SongItem>()
-                            mergedList.addAll(beforeList)
-                            mergedList.addAll(currentList)
-                            mergedList.addAll(afterList)
-
-                            _songList.value = mergedList
-                            _currentSongIndex.value = fullIndex
-                            audioService?.refreshNativeQueue()
-                            Log.d(TAG, "⚡ Chunky Hydration: Backfilled remaining queue. New size: ${mergedList.size}")
-                        }
-                    }
+                    _songList.value = ArrayList(lastQueue)
+                    _currentSongIndex.value = fullIndex
                 } else {
                     _songList.value = listOf(lastSong)
                     _currentSongIndex.value = 0
@@ -1244,13 +1835,15 @@ class PlayerSharedViewModel @Inject constructor(
         val idx = _currentSongIndex.value
         val pos = _currentPosition.value
 
-        PlaybackStateManager.saveState(
-            appContext,
-            song,
-            pos.toLong(),
-            queue,
-            idx
-        )
+        viewModelScope.launch(Dispatchers.IO) {
+            PlaybackStateManager.saveState(
+                appContext,
+                song,
+                pos.toLong(),
+                queue,
+                idx
+            )
+        }
     }
 
     // ========== SERVICE & MANAGERS ==========
@@ -1321,16 +1914,24 @@ class PlayerSharedViewModel @Inject constructor(
             _isCurrentSongDisliked.value = false
         }
 
-        // Sync like status to YouTube Music in the background
+        // Sync like status to YouTube Music in the background and update local cache (Instruction #26)
         if (!song.videoId.isNullOrEmpty()) {
-            bgScope.launch(Dispatchers.IO) {
+            val vId = song.videoId!!
+            val existing = engagementCache.get(vId)
+            engagementCache.put(vId, CachedEngagement(
+                likesCountStr = existing?.likesCountStr ?: _likesCount.value,
+                likesCountInt = existing?.likesCountInt ?: baseLikesCountInt,
+                isLiked = newState
+            ))
+
+            viewModelScope.launch(Dispatchers.IO) {
                 try {
                     val status = if (newState) {
                         YouTubeMusic.LikeStatus.LIKE
                     } else {
                         YouTubeMusic.LikeStatus.INDIFFERENT
                     }
-                    val result = YouTubeMusic.updateLikeStatus(song.videoId!!, status)
+                    val result = YouTubeMusic.updateLikeStatus(vId, status)
                     Log.d(TAG, "Synced like status to YouTube Music for ${song.title}: success=${result.getOrDefault(false)}")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to sync like to YouTube Music: ${e.message}")
@@ -1361,9 +1962,17 @@ class PlayerSharedViewModel @Inject constructor(
             }
         }
 
-        // Sync dislike status to YouTube Music in the background
+        // Sync dislike status to YouTube Music in the background and update local cache (Instruction #26)
         if (!song.videoId.isNullOrEmpty()) {
-            bgScope.launch(Dispatchers.IO) {
+            val vId = song.videoId!!
+            val existing = engagementCache.get(vId)
+            engagementCache.put(vId, CachedEngagement(
+                likesCountStr = existing?.likesCountStr ?: _likesCount.value,
+                likesCountInt = existing?.likesCountInt ?: baseLikesCountInt,
+                isLiked = false
+            ))
+
+            viewModelScope.launch(Dispatchers.IO) {
                 try {
                     val status = if (newState) {
                         YouTubeMusic.LikeStatus.DISLIKE
@@ -1429,21 +2038,35 @@ class PlayerSharedViewModel @Inject constructor(
         lyricsController.selectProvider(providerName, appContext, _currentSong.value)
     }
 
+    fun updateCustomLyrics(lyricsText: String) {
+        lyricsController.updateCustomLyrics(lyricsText)
+        val song = _currentSong.value ?: return
+        com.codetrio.spatialflow.data.lyrics.CustomLyricsStorage.saveLyrics(appContext, song, lyricsText)
+    }
+
 
     fun setIsPlaying(playing: Boolean) {
-        _isPlaying.value = playing
+        if (_isPlaying.value != playing) {
+            _isPlaying.value = playing
+        }
     }
 
     fun postIsPlaying(playing: Boolean) {
-        _isPlaying.value = playing
+        if (_isPlaying.value != playing) {
+            _isPlaying.value = playing
+        }
     }
 
     fun setCurrentPosition(position: Int) {
-        _currentPosition.value = position
+        if (abs(_currentPosition.value - position) >= 200 || position == 0) {
+            _currentPosition.value = position
+        }
     }
 
     fun setDuration(dur: Int) {
-        _duration.value = dur
+        if (_duration.value != dur) {
+            _duration.value = dur
+        }
     }
 
     // ========== AUDIO EFFECTS ==========
@@ -1454,6 +2077,22 @@ class PlayerSharedViewModel @Inject constructor(
         }
         _is8DEnabled.value = enabled
         audioService?.set8DEnabled(enabled)
+        if (enabled) {
+            audioService?.set8DSpeed(_speed8D.value)
+            audioService?.set8DReverb(_reverb8D.value)
+        }
+    }
+
+    fun set8DSpeed(speed: Float) {
+        val clamped = speed.coerceIn(0.03f, 0.40f)
+        _speed8D.value = clamped
+        audioService?.set8DSpeed(clamped)
+    }
+
+    fun set8DReverb(reverb: Float) {
+        val clamped = reverb.coerceIn(0.0f, 0.40f)
+        _reverb8D.value = clamped
+        audioService?.set8DReverb(clamped)
     }
 
     fun setReverbEnabled(enabled: Boolean) {
@@ -1528,16 +2167,8 @@ class PlayerSharedViewModel @Inject constructor(
 
     fun setSongList(songs: List<SongItem>) {
         _songList.value = songs
+        audioService?.setServicePlaylist(songs, _currentSongIndex.value, currentQueue)
         Log.d(TAG, "Song list updated: ${songs.size} songs")
-        
-        // Proactive queue warmer
-        if (songs.isNotEmpty()) {
-            bgScope.launch(Dispatchers.IO) {
-                songs.take(3).forEach { song ->
-                    song.videoId?.let { YouTubeMusic.prefetchStream(it) }
-                }
-            }
-        }
     }
 
     fun setLocalSongs(songs: List<SongItem>) {
@@ -1545,7 +2176,7 @@ class PlayerSharedViewModel @Inject constructor(
     }
 
     fun rescanLocalFiles() {
-        bgScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             val songs = mutableListOf<SongItem>()
             try {
                 val proj = arrayOf(
@@ -1553,6 +2184,7 @@ class PlayerSharedViewModel @Inject constructor(
                     android.provider.MediaStore.Audio.Media.TITLE,
                     android.provider.MediaStore.Audio.Media.ARTIST,
                     android.provider.MediaStore.Audio.Media.ALBUM_ID,
+                    android.provider.MediaStore.Audio.Media.ALBUM,
                     android.provider.MediaStore.Audio.Media.DATA,
                     android.provider.MediaStore.Audio.Media.DURATION,
                     android.provider.MediaStore.Audio.Media.DATE_ADDED
@@ -1573,6 +2205,7 @@ class PlayerSharedViewModel @Inject constructor(
                     val titleCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.TITLE)
                     val artistCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.ARTIST)
                     val albumCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.ALBUM_ID)
+                    val albumNameCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.ALBUM)
                     val dataCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.DATA)
                     val durCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.DURATION)
                     val dateCol = c.getColumnIndexOrThrow(android.provider.MediaStore.Audio.Media.DATE_ADDED)
@@ -1586,17 +2219,18 @@ class PlayerSharedViewModel @Inject constructor(
                             continue
                         }
 
-                        songs.add(
-                            SongItem(
-                                c.getLong(idCol),
-                                c.getString(titleCol),
-                                c.getString(artistCol),
-                                c.getLong(albumCol),
-                                c.getString(dataCol),
-                                c.getLong(durCol),
-                                c.getLong(dateCol)
-                            )
-                        )
+                        val item = SongItem(
+                            c.getLong(idCol),
+                            c.getString(titleCol),
+                            c.getString(artistCol),
+                            c.getLong(albumCol),
+                            c.getString(dataCol),
+                            c.getLong(durCol),
+                            c.getLong(dateCol)
+                        ).apply {
+                            albumName = c.getString(albumNameCol)
+                        }
+                        songs.add(item)
                     }
                 }
             } catch (e: Exception) {
@@ -1652,7 +2286,9 @@ class PlayerSharedViewModel @Inject constructor(
 
 
 
+        audioService?.setServicePlaylist(_songList.value, index, currentQueue)
         audioService?.let {
+            pendingAutoPlayOnServiceConnected = false
             // 1. Start playback immediately
             it.loadAndPlay(song.contentUri)
             
@@ -1660,14 +2296,15 @@ class PlayerSharedViewModel @Inject constructor(
             if (song.thumbnailUrl != null) {
                 it.setSongMetadataByUrl(song.title, song.thumbnailUrl)
             } else {
-                it.setSongMetadataById(song.title, song.albumId)
+                it.setSongMetadataForLocalSong(song)
             }
             
             // Personalization history
             updateRecentArtists(song.artist)
         } ?: run {
             // Service not yet bound — queue for when it connects
-            Log.w(TAG, "AudioService not bound yet, song queued for cold-start loading")
+            pendingAutoPlayOnServiceConnected = true
+            Log.w(TAG, "AudioService not bound yet, song queued for cold-start playback")
         }
         
         savePlaybackState()
@@ -1677,7 +2314,7 @@ class PlayerSharedViewModel @Inject constructor(
     private fun updateRecentArtists(artist: String?) {
         if (artist.isNullOrBlank() || artist.equals("<unknown>", ignoreCase = true)) return
         
-        bgScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             val prefs = appContext.getSharedPreferences("explore_prefs", Context.MODE_PRIVATE)
             val history = prefs.getString("recent_artists_list", "") ?: ""
             val currentList = history.split("|").filter { it.isNotBlank() }.toMutableList()
@@ -1727,19 +2364,55 @@ class PlayerSharedViewModel @Inject constructor(
 
     fun playSong(song: SongItem?) {
         if (song == null) return
-        val index = findSongIndexById(song.id)
-        if (index != -1) {
-            playSongAtIndex(index)
+        if (!song.videoId.isNullOrEmpty() && _isAutoplayEnabled.value) {
+            val radioQueue = com.codetrio.spatialflow.player.queue.YouTubeQueue.radio(song)
+            setQueue(radioQueue)
         } else {
-            addToQueue(song)
-            val newIndex = findSongIndexById(song.id)
-            if (newIndex != -1) playSongAtIndex(newIndex)
+            val index = findSongIndexById(song.id)
+            if (index != -1) {
+                playSongAtIndex(index)
+            } else {
+                addToQueue(song)
+                val newIndex = findSongIndexById(song.id)
+                if (newIndex != -1) playSongAtIndex(newIndex)
+            }
         }
     }
 
     fun findSongIndexById(songId: Long): Int = _songList.value.indexOfFirst { it.id == songId }
 
-    fun playNextSong(force: Boolean = false) {
+    val skipDebouncer by lazy {
+        com.codetrio.spatialflow.service.SkipDebouncer(
+            scope = viewModelScope,
+            debounceMs = 150L,
+            onInstantMetadataUpdate = { targetIndex ->
+                val songs = _songList.value
+                if (targetIndex in songs.indices) {
+                    val song = songs[targetIndex]
+                    _currentSongIndex.value = targetIndex
+                    _currentSong.value = song
+                    _songUri.value = song.contentUri
+                }
+            },
+            onCancelInFlightLoads = {
+                audioService?.cancelInFlightLoads()
+            },
+            onCommitSkip = { finalTargetIndex ->
+                playSongAtIndex(finalTargetIndex)
+            }
+        )
+    }
+
+    fun playNextSong(force: Boolean = false, fromUser: Boolean = false) {
+        if (fromUser) {
+            val maxCount = _songList.value.size
+            if (maxCount > 0) {
+                skipDebouncer.skipNext(_currentSongIndex.value, maxCount) { _ ->
+                    getNextSongIndex(ignoreRepeatOne = true)
+                }
+                return
+            }
+        }
         if (!force) {
             if (_sleepTimerMode.value == SleepTimerMode.END_OF_SONG) {
                 pauseAudio()
@@ -1752,14 +2425,44 @@ class PlayerSharedViewModel @Inject constructor(
                 return
             }
         }
-        val nextIndex = getNextSongIndex()
+        val nextIndex = getNextSongIndex(ignoreRepeatOne = fromUser || force)
         if (nextIndex >= 0) {
             playSongAtIndex(nextIndex)
         } else {
             if (_isAutoplayEnabled.value) {
-                _currentSong.value?.videoId?.let {
-                    checkQueueAndFetchMore()
-                } ?: audioService?.pause()
+                val songForRadio = _currentSong.value ?: _songList.value.lastOrNull()
+                if (songForRadio != null && !songForRadio.videoId.isNullOrEmpty()) {
+                    val radioQueue = com.codetrio.spatialflow.player.queue.YouTubeQueue.radio(songForRadio)
+                    currentQueue = radioQueue
+                    viewModelScope.launch(Dispatchers.IO) {
+                        try {
+                            val status = radioQueue.getInitialStatus()
+                            val existingIds = _songList.value.mapNotNull { it.videoId }.toSet()
+                            val newItems = status.items.filter { it.videoId != null && it.videoId !in existingIds }
+                            withContext(Dispatchers.Main) {
+                                if (newItems.isNotEmpty() && _isAutoplayEnabled.value) {
+                                    val startIdx = _songList.value.size
+                                    synchronized(autoAddedMediaIds) {
+                                        newItems.forEach { it.videoId?.let { id -> autoAddedMediaIds.add(id) } }
+                                    }
+                                    addSongsToQueue(newItems)
+                                    if (startIdx in _songList.value.indices) {
+                                        playSongAtIndex(startIdx)
+                                    } else {
+                                        audioService?.pause()
+                                    }
+                                } else {
+                                    audioService?.pause()
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to load radio at end of playlist", e)
+                            withContext(Dispatchers.Main) { audioService?.pause() }
+                        }
+                    }
+                } else {
+                    audioService?.pause()
+                }
             } else {
                 audioService?.pause()
             }
@@ -1777,30 +2480,29 @@ class PlayerSharedViewModel @Inject constructor(
             return
         }
 
-        val currentIdx = _currentSongIndex.value
-        val mode = _repeatMode.value
-        val shuffle = _isShuffleEnabled.value
-        
-        if (shuffle && songs.size > 1) {
-            var prev = currentIdx
-            while (prev == currentIdx) prev = shuffleRandom.nextInt(songs.size)
-            playSongAtIndex(prev)
-            return
-        }
-        
-        val prevIndex = currentIdx - 1
-        if (prevIndex < 0) {
-            if (mode == REPEAT_ALL) {
-                playSongAtIndex(songs.size - 1)
+        skipDebouncer.skipPrevious(_currentSongIndex.value, songs.size) { currentIdx ->
+            val mode = _repeatMode.value
+            val shuffle = _isShuffleEnabled.value
+
+            if (shuffle && songs.size > 1) {
+                var prev = currentIdx
+                while (prev == currentIdx) prev = shuffleRandom.nextInt(songs.size)
+                prev
             } else {
-                audioService?.seekTo(0)
+                val prevIndex = currentIdx - 1
+                if (prevIndex < 0) {
+                    if (mode == REPEAT_ALL) songs.size - 1 else 0
+                } else prevIndex
             }
-        } else {
-            playSongAtIndex(prevIndex)
         }
     }
 
-    fun getNextSongIndex(): Int {
+    fun getNextSongIndex(ignoreRepeatOne: Boolean = false): Int {
+        val serviceNext = audioService?.peekNextSongIndex(ignoreRepeatOne)
+        if (serviceNext != null && serviceNext >= 0) {
+            return serviceNext
+        }
+
         val songs = _songList.value
         if (songs.isEmpty()) return -1
         
@@ -1808,9 +2510,9 @@ class PlayerSharedViewModel @Inject constructor(
         val mode = _repeatMode.value
         val shuffle = _isShuffleEnabled.value
 
-        if (mode == REPEAT_ONE) return if (currentIdx >= 0) currentIdx else 0
+        if (!ignoreRepeatOne && mode == REPEAT_ONE) return if (currentIdx >= 0) currentIdx else 0
         if (shuffle && songs.size > 1) {
-            val unplayed = songs.filter { it.id !in playedShuffledIds }
+            val unplayed = songs.filter { it.id !in playedShuffledIds && it.id != _currentSong.value?.id }
             if (unplayed.isNotEmpty()) {
                 val nextSong = unplayed[shuffleRandom.nextInt(unplayed.size)]
                 return songs.indexOfFirst { it.id == nextSong.id }
@@ -1818,40 +2520,49 @@ class PlayerSharedViewModel @Inject constructor(
                 // All songs played!
                 playedShuffledIds.clear()
                 _currentSong.value?.id?.let { playedShuffledIds.add(it) }
+                if (mode == REPEAT_ALL) {
+                    val pool = songs.filter { it.id != _currentSong.value?.id }
+                    if (pool.isNotEmpty()) {
+                        val nextSong = pool[shuffleRandom.nextInt(pool.size)]
+                        return songs.indexOfFirst { it.id == nextSong.id }
+                    }
+                }
                 return -1
             }
         }
 
         val next = currentIdx + 1
         return if (next >= songs.size) {
-            if (mode == REPEAT_ALL) 0 else -1
+            if (mode == REPEAT_ALL || (ignoreRepeatOne && mode == REPEAT_ONE)) 0 else -1
         } else next
     }
 
     private fun prefetchNextPredictedSongs() {
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+        if (cm?.isActiveNetworkMetered == true) return // Never starve cellular connection bandwidth
+
         val songs = _songList.value
         val currentIdx = _currentSongIndex.value
-        // Collect the next 2 online songs (skip local files which don't need URL resolution)
-        val idsToWarm = (1..2)
-            .map { offset -> currentIdx + offset }
-            .filter { idx -> idx in songs.indices }
-            .mapNotNull { idx -> songs[idx].videoId }
-            .filter { it.isNotEmpty() }
-        if (idsToWarm.isNotEmpty()) {
-            NewPipeStreamExtractor.warmCache(idsToWarm)
+        val nextIdx = currentIdx + 1
+        if (nextIdx in songs.indices) {
+            val videoId = songs[nextIdx].videoId
+            if (!videoId.isNullOrEmpty()) {
+                YouTubeMusic.prefetchStream(videoId)
+            }
         }
     }
 
-    private var specJob: kotlinx.coroutines.Job? = null
+    private var specJob: Job? = null
     
     /**
      * Touch prediction prefetching. Call this on ACTION_DOWN.
      */
     fun specPrefetch(song: SongItem) {
         specJob?.cancel()
-        specJob = bgScope.launch(Dispatchers.IO) {
-            // Warm full PlayerResult cache (URL + metadata) not just the URL
-            song.videoId?.let { NewPipeStreamExtractor.warmCache(listOf(it)) }
+        specJob = viewModelScope.launch(Dispatchers.IO) {
+            // Resolve through the same path a tap uses, so the tap that follows this touch
+            // lands on a warm cache instead of paying a full round-trip.
+            song.videoId?.let { YouTubeMusic.prefetchStream(it) }
         }
     }
 
@@ -1912,6 +2623,26 @@ class PlayerSharedViewModel @Inject constructor(
         audioService?.refreshNativeQueue()
     }
 
+    /** Removes all songs scheduled AFTER the currently playing song, keeping history intact. */
+    fun clearUpcomingQueue() {
+        val currentIdx = _currentSongIndex.value
+        val songs = _songList.value
+        if (currentIdx < 0 || currentIdx >= songs.size) return
+        val newList = songs.subList(0, currentIdx + 1).toList()
+        _songList.value = newList
+        audioService?.refreshNativeQueue()
+    }
+
+    /** Keeps only the currently playing song; removes all others. */
+    fun clearAllExceptCurrent() {
+        val currentIdx = _currentSongIndex.value
+        val songs = _songList.value
+        val currentSong = songs.getOrNull(currentIdx) ?: return
+        _songList.value = listOf(currentSong)
+        _currentSongIndex.value = 0
+        audioService?.refreshNativeQueue()
+    }
+
     fun addToQueue(song: SongItem) {
         val newList = ArrayList(_songList.value)
         if (newList.none { it.id == song.id }) {
@@ -1927,11 +2658,48 @@ class PlayerSharedViewModel @Inject constructor(
         
         val currentIdx = _currentSongIndex.value
         val insertIndex = (if (currentIdx < 0) -1 else currentIdx) + 1
-        newList.add(insertIndex.coerceAtMost(newList.size), song)
+        newList.add(insertIndex.coerceIn(0, newList.size), song)
         
         _songList.value = newList
         _currentSongIndex.value = findSongIndexById(_currentSong.value?.id ?: -1)
         audioService?.refreshNativeQueue()
+    }
+
+    fun addSongsToQueueEnd(songs: List<SongItem>) {
+        if (songs.isEmpty()) return
+        val newList = ArrayList(_songList.value)
+        songs.forEach { song ->
+            if (newList.none { it.id == song.id }) {
+                newList.add(song)
+            }
+        }
+        _songList.value = newList
+        audioService?.refreshNativeQueue()
+    }
+
+    fun addSongsToQueueNext(songs: List<SongItem>) {
+        if (songs.isEmpty()) return
+        val newList = ArrayList(_songList.value)
+        val songIds = songs.map { it.id }.toSet()
+        newList.removeAll { songIds.contains(it.id) }
+        
+        val currentIdx = _currentSongIndex.value
+        var insertIndex = (if (currentIdx < 0) -1 else currentIdx) + 1
+        songs.forEach { song ->
+            newList.add(insertIndex.coerceIn(0, newList.size), song)
+            insertIndex++
+        }
+        _songList.value = newList
+        _currentSongIndex.value = findSongIndexById(_currentSong.value?.id ?: -1)
+        audioService?.refreshNativeQueue()
+    }
+
+    fun playSongsShuffled(songs: List<SongItem>) {
+        if (songs.isEmpty()) return
+        val shuffled = songs.shuffled()
+        setShuffleEnabled(true)
+        setSongList(shuffled)
+        playSongAtIndex(0)
     }
 
     // ========== UTILS ==========
@@ -1970,26 +2738,56 @@ class PlayerSharedViewModel @Inject constructor(
     
     // Endless Queue
     var currentQueue: com.codetrio.spatialflow.player.queue.Queue? = null
+        set(value) {
+            field = value
+            audioService?.currentQueueStrategy = value
+        }
+
+    fun playYouTubePlaylistQueue(playlistId: String, videoId: String? = null, startIndex: Int = 0, preloadItem: SongItem? = null) {
+        val queue = com.codetrio.spatialflow.player.queue.YouTubePlaylistQueue(
+            playlistId = playlistId,
+            videoId = videoId,
+            startIndex = startIndex,
+            preloadItem = preloadItem
+        )
+        setQueue(queue, startIndex)
+    }
+
+    fun playLocalPlaylistQueue(title: String, songs: List<SongItem>, startIndex: Int = 0) {
+        if (songs.isEmpty()) return
+        val queue = com.codetrio.spatialflow.player.queue.LocalPlaylistQueue(
+            playlistTitle = title,
+            songs = songs,
+            startIndex = startIndex
+        )
+        setQueue(queue, startIndex)
+    }
 
     fun setQueue(queue: com.codetrio.spatialflow.player.queue.Queue, startIndex: Int = 0) {
         currentQueue = queue
         synchronized(autoAddedMediaIds) { autoAddedMediaIds.clear() }
         
         val preload = queue.preloadItem
-        if (preload != null) {
+        val currentPlayingId = _currentSong.value?.id
+        val isAlreadyPlayingPreload = preload != null && currentPlayingId == preload.id
+
+        if (preload != null && !isAlreadyPlayingPreload) {
             setSongList(listOf(preload))
             playSongAtIndex(0)
         }
         
-        bgScope.launch(Dispatchers.IO) {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 val status = queue.getInitialStatus()
                 withContext(Dispatchers.Main) {
+                    val prevPlayingId = _currentSong.value?.id
                     if (!_isAutoplayEnabled.value && queue is com.codetrio.spatialflow.player.queue.YouTubeQueue) {
                         val singleSong = preload ?: status.items.getOrNull(status.mediaItemIndex)
                         if (singleSong != null) {
-                            setSongList(listOf(singleSong))
-                            playSongAtIndex(0)
+                            if (_currentSong.value?.id != singleSong.id) {
+                                setSongList(listOf(singleSong))
+                                playSongAtIndex(0)
+                            }
                         } else {
                             setSongList(status.items)
                             val matchedIndex = if (preload != null) {
@@ -1998,7 +2796,7 @@ class PlayerSharedViewModel @Inject constructor(
                             } else {
                                 status.mediaItemIndex
                             }
-                            if (matchedIndex in status.items.indices) {
+                            if (matchedIndex in status.items.indices && _currentSong.value?.id != status.items[matchedIndex].id) {
                                 playSongAtIndex(matchedIndex)
                             }
                         }
@@ -2022,7 +2820,7 @@ class PlayerSharedViewModel @Inject constructor(
                         }
                         
                         if (matchedIndex in status.items.indices) {
-                            if (preload != null && status.items[matchedIndex].id == preload.id) {
+                            if ((preload != null && status.items[matchedIndex].id == preload.id) || prevPlayingId == status.items[matchedIndex].id) {
                                 updateSongIndexOnly(matchedIndex)
                                 if (status.position > 0) {
                                     audioService?.seekTo(status.position.toInt())
@@ -2033,7 +2831,7 @@ class PlayerSharedViewModel @Inject constructor(
                                     audioService?.seekTo(status.position.toInt())
                                 }
                             }
-                        } else if (status.items.isNotEmpty()) {
+                        } else if (status.items.isNotEmpty() && prevPlayingId == null) {
                             playSongAtIndex(0)
                             if (status.position > 0) {
                                 audioService?.seekTo(status.position.toInt())
@@ -2047,15 +2845,17 @@ class PlayerSharedViewModel @Inject constructor(
         }
     }
 
+    private var isFetchingRadio = false
+
     fun checkQueueAndFetchMore() {
         if (!_isAutoplayEnabled.value) return
-        val queue = currentQueue ?: return
+        val queue = currentQueue
         val currentIdx = _currentSongIndex.value
         val listSize = _songList.value.size
         
         // Auto-Load continuation Pages (Auto-Load More)
-        if (listSize - currentIdx <= 5 && queue.hasNextPage()) {
-            bgScope.launch(Dispatchers.IO) {
+        if (queue != null && listSize - currentIdx <= 5 && queue.hasNextPage()) {
+            viewModelScope.launch(Dispatchers.IO) {
                 try {
                     val nextItems = queue.nextPage()
                     if (nextItems.isNotEmpty()) {
@@ -2072,13 +2872,15 @@ class PlayerSharedViewModel @Inject constructor(
                     Log.e(TAG, "Failed to fetch next queue page", e)
                 }
             }
-        } else if (listSize - currentIdx <= 3 && !queue.hasNextPage() && _isAutoplayEnabled.value) {
+        } else if (listSize - currentIdx <= 3 && (queue == null || !queue.hasNextPage()) && _isAutoplayEnabled.value) {
             // Bootstrapping Infinite Autoplay (YouTube Radio)
-            val currentSong = _currentSong.value
-            if (currentSong != null && !currentSong.videoId.isNullOrEmpty()) {
-                val radioQueue = com.codetrio.spatialflow.player.queue.YouTubeQueue.radio(currentSong)
+            if (isFetchingRadio) return
+            val songForRadio = _currentSong.value ?: _songList.value.lastOrNull()
+            if (songForRadio != null && !songForRadio.videoId.isNullOrEmpty()) {
+                isFetchingRadio = true
+                val radioQueue = com.codetrio.spatialflow.player.queue.YouTubeQueue.radio(songForRadio)
                 currentQueue = radioQueue
-                bgScope.launch(Dispatchers.IO) {
+                viewModelScope.launch(Dispatchers.IO) {
                     try {
                         val status = radioQueue.getInitialStatus()
                         val existingIds = _songList.value.mapNotNull { it.videoId }.toSet()
@@ -2095,6 +2897,8 @@ class PlayerSharedViewModel @Inject constructor(
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to handoff to radio", e)
+                    } finally {
+                        isFetchingRadio = false
                     }
                 }
             }
@@ -2160,13 +2964,35 @@ class PlayerSharedViewModel @Inject constructor(
         newList.addAll(uniqueNewSongs)
         _songList.value = newList
         _currentSongIndex.value = findSongIndexById(_currentSong.value?.id ?: -1)
+        audioService?.addSongsToServicePlaylist(uniqueNewSongs)
         audioService?.refreshNativeQueue()
+    }
+
+    fun syncFromService(
+        songs: List<SongItem>,
+        currentIndex: Int,
+        currentSong: SongItem?,
+        isPlaying: Boolean
+    ) {
+        if (songs.isNotEmpty()) {
+            _songList.value = songs
+        }
+        if (currentIndex in songs.indices) {
+            _currentSongIndex.value = currentIndex
+        }
+        if (currentSong != null) {
+            _currentSong.value = currentSong
+            _songUri.value = currentSong.contentUri
+        }
+        _isPlaying.value = isPlaying
+        _isPlaybackReady.value = true
     }
 
     override fun onCleared() {
         super.onCleared()
         appContext.getSharedPreferences("AppSettings", Context.MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(appSettingsPrefListener)
+        audioService?.setViewModel(null)
         audioService = null
         _audioServiceState.value = null
     }

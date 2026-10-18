@@ -4,5 +4,5 @@
         app:font="@font/google_sans_flex"
         app:fontStyle="normal"
         app:fontWeight="400"
-        app:fontVariationSettings="'ROND' 100" />
+        app:fontVariationSettings="'wght' 450, 'ROND' 85" />
 </font-family>

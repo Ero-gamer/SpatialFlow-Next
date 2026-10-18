@@ -1,5 +1,6 @@
 package com.codetrio.spatialflow.model
 
+import androidx.compose.runtime.Immutable
 import android.net.Uri
 import android.os.Build
 import androidx.annotation.RequiresApi
@@ -7,6 +8,7 @@ import java.io.File
 import java.io.Serializable
 import androidx.core.net.toUri
 
+@Immutable
 data class SongItem(
     @JvmField val id: Long,
     @JvmField val title: String,
@@ -20,9 +22,14 @@ data class SongItem(
 
     @JvmField var thumbnailUrl: String? = null
     @JvmField var animatedThumbnailUrl: String? = null
+    @JvmField var albumName: String? = null
     @JvmField var videoId: String? = null
     @JvmField var artistId: String? = null
     @JvmField var lufs: Float? = null
+    @JvmField var isExplicit: Boolean = false
+    @JvmField var hasDolbyAtmos: Boolean = false
+    @JvmField var atmosMimeType: String? = null
+    @JvmField var atmosStreamUri: String? = null
 
     private var uriString: String? = null
 
@@ -39,7 +46,11 @@ data class SongItem(
             it.videoId = this.videoId
             it.artistId = this.artistId
             it.lufs = this.lufs
+            it.isExplicit = this.isExplicit
             it.uriString = this.uriString
+            it.hasDolbyAtmos = this.hasDolbyAtmos
+            it.atmosMimeType = this.atmosMimeType
+            it.atmosStreamUri = this.atmosStreamUri
         }
     }
 
@@ -68,12 +79,19 @@ data class SongItem(
         this(id, title, artist, albumId, path, 0, dateAdded)
 
     fun getAlbumArtUri(): Uri? {
-        if (thumbnailUrl != null) return enhanceThumbnailUrl(thumbnailUrl!!).toUri()
-        if (albumId > 0) {
-            return "content://media/external/audio/albumart/$albumId".toUri()
+        if (thumbnailUrl != null && (thumbnailUrl!!.startsWith("http://") || thumbnailUrl!!.startsWith("https://"))) {
+            return enhanceThumbnailUrl(thumbnailUrl!!).toUri()
         }
-        if (path != null && File(path).exists()) {
+        // For local tracks, return the track's unique MediaStore audio content URI
+        // so Coil extracts each individual song's embedded artwork without albumId collision
+        if (id > 0) {
+            return contentUri
+        }
+        if (path != null) {
             return Uri.fromFile(File(path))
+        }
+        if (thumbnailUrl != null) {
+            return thumbnailUrl!!.toUri()
         }
         return contentUri
     }
@@ -160,7 +178,7 @@ data class SongItem(
 
         @JvmStatic
         @JvmOverloads
-        fun createOnlineSong(videoId: String?, title: String?, artist: String?, streamUrl: String?, durationMs: Long, thumbnailUrl: String?, artistId: String? = null, animatedThumbnailUrl: String? = null): SongItem {
+        fun createOnlineSong(videoId: String?, title: String?, artist: String?, streamUrl: String?, durationMs: Long, thumbnailUrl: String?, artistId: String? = null, animatedThumbnailUrl: String? = null, isExplicit: Boolean = false): SongItem {
             val id = videoId?.hashCode()?.toLong() ?: (streamUrl?.hashCode()?.toLong() ?: System.currentTimeMillis())
             val song = SongItem(id, title ?: "Unknown Title", artist ?: "Unknown Artist", -1, streamUrl, durationMs, System.currentTimeMillis())
             song.contentUri = (streamUrl ?: "").toUri()
@@ -168,6 +186,7 @@ data class SongItem(
             song.animatedThumbnailUrl = animatedThumbnailUrl
             song.videoId = videoId
             song.artistId = artistId
+            song.isExplicit = isExplicit
             return song
         }
 
@@ -208,7 +227,8 @@ fun SongItem.toPlaylistSongEntity(playlistId: Long, position: Int = 0): com.code
         thumbnailUrl = this.thumbnailUrl ?: this.path,
         addedAt = System.currentTimeMillis(),
         position = position,
-        lufs = this.lufs
+        lufs = this.lufs,
+        isExplicit = this.isExplicit
     )
 }
 
@@ -226,6 +246,7 @@ fun com.codetrio.spatialflow.data.db.PlaylistSongEntity.toSongItem(): SongItem {
             this.addedAt
         ).apply {
             this.lufs = this@toSongItem.lufs
+            this.isExplicit = this@toSongItem.isExplicit
         }
     } else {
         // Online YouTube Music song
@@ -235,7 +256,8 @@ fun com.codetrio.spatialflow.data.db.PlaylistSongEntity.toSongItem(): SongItem {
             artist = this.artist,
             streamUrl = null,
             durationMs = this.duration,
-            thumbnailUrl = this.thumbnailUrl
+            thumbnailUrl = this.thumbnailUrl,
+            isExplicit = this@toSongItem.isExplicit
         ).apply {
             this.lufs = this@toSongItem.lufs
         }

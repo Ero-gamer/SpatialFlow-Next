@@ -269,8 +269,11 @@ fun SpatialFlowTheme(
             colorScheme = colorScheme,
             typography = Typography,
             motionScheme = MotionScheme.expressive(),
-            content = content
-        )
+        ) {
+            androidx.compose.material3.ProvideTextStyle(value = Typography.bodyLarge) {
+                content()
+            }
+        }
     }
 }
 

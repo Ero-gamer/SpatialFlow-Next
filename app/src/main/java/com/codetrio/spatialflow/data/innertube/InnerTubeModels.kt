@@ -1,6 +1,8 @@
 package com.codetrio.spatialflow.data.innertube
 
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
+import com.codetrio.spatialflow.model.SongItem
 
 /**
  * Data models for YouTube Music online content.
@@ -8,7 +10,7 @@ import androidx.compose.runtime.Stable
  */
 
 /** Represents an online song from YouTube Music */
-@Stable
+@Immutable
 data class OnlineSong(
     val videoId: String,
     val title: String,
@@ -20,11 +22,29 @@ data class OnlineSong(
     val durationMs: Long = 0,           // milliseconds
     val thumbnailUrl: String? = null,
     val animatedThumbnailUrl: String? = null,
-    val isExplicit: Boolean = false
+    val isExplicit: Boolean = false,
+    val isVideo: Boolean = false,
+    val thumbnailRatio: Float? = null
 )
 
+fun OnlineSong.toSongItem(): SongItem {
+    return SongItem.createOnlineSong(
+        videoId = videoId,
+        title = title,
+        artist = artist,
+        streamUrl = null,
+        durationMs = durationMs,
+        thumbnailUrl = thumbnailUrl,
+        artistId = artistId,
+        animatedThumbnailUrl = animatedThumbnailUrl,
+        isExplicit = isExplicit
+    ).apply {
+        this.albumName = this@toSongItem.albumName
+    }
+}
+
 /** Represents an online album */
-@Stable
+@Immutable
 data class OnlineAlbum(
     val browseId: String,
     val playlistId: String? = null,
@@ -36,7 +56,7 @@ data class OnlineAlbum(
 )
 
 /** Represents an online artist */
-@Stable
+@Immutable
 data class OnlineArtist(
     val browseId: String,
     val title: String,
@@ -48,13 +68,13 @@ data class OnlineArtist(
 )
 
 /** Lightweight artist reference (used in songs/albums) */
-@Stable
+@Immutable
 data class OnlineArtistRef(
     val name: String,
     val id: String? = null
 )
 
-@Stable
+@Immutable
 data class OnlinePlaylist(
     val playlistId: String,
     val title: String,
@@ -105,6 +125,43 @@ sealed class SearchItem {
         val playlist: OnlinePlaylist,
         val badge: String? = null
     ) : SearchItem()
+}
+
+/** Deterministic stable key for Jetpack Compose LazyColumn/LazyRow and in-parser deduplication */
+val SearchItem.stableKey: String
+    get() = when (this) {
+        is SearchItem.Song -> "song_${song.videoId.ifBlank { "${song.title}_${song.artist}" }}"
+        is SearchItem.Album -> "album_${album.browseId.ifBlank { album.title }}"
+        is SearchItem.Artist -> "artist_${artist.browseId.ifBlank { artist.title }}"
+        is SearchItem.Playlist -> "playlist_${playlist.playlistId.ifBlank { playlist.title }}"
+        is SearchItem.TopResult -> "top_${title}_${subtitle}"
+        is SearchItem.Header -> "header_${title}"
+    }
+
+const val THUMBNAIL_RATIO_SQUARE = 1f
+const val THUMBNAIL_RATIO_LANDSCAPE = 16f / 9f
+
+val SearchItem.isWidescreenVideo: Boolean
+    get() = when (this) {
+        is SearchItem.Song -> song.isVideo ||
+                song.thumbnailUrl?.contains("ytimg.com/vi/") == true ||
+                song.thumbnailUrl?.contains("i.ytimg.com/vi/") == true
+        else -> false
+    }
+
+fun SearchItem.preferredThumbnailRatio(sectionTitle: String? = null): Float {
+    if (this is SearchItem.Artist) return THUMBNAIL_RATIO_SQUARE
+    if (sectionTitle?.contains("video", ignoreCase = true) == true) return THUMBNAIL_RATIO_LANDSCAPE
+    return when (this) {
+        is SearchItem.Song -> {
+            if (isWidescreenVideo) {
+                THUMBNAIL_RATIO_LANDSCAPE
+            } else {
+                song.thumbnailRatio ?: THUMBNAIL_RATIO_SQUARE
+            }
+        }
+        else -> THUMBNAIL_RATIO_SQUARE
+    }
 }
 
 /** Search result container */
@@ -170,7 +227,7 @@ data class ArtistPage(
 )
 
 /** Playlist page data */
-@Stable
+@Immutable
 data class PlaylistPage(
     val playlist: OnlinePlaylist,
     val songs: List<OnlineSong>,

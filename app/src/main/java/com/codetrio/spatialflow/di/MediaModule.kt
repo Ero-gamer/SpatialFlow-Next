@@ -23,7 +23,7 @@ object MediaModule {
     @Singleton
     fun provideSimpleCache(@ApplicationContext context: Context): SimpleCache {
         val cacheDir = File(context.cacheDir, "media_cache")
-        val prefs = context.getSharedPreferences("spatialflow_settings", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences("AppSettings", Context.MODE_PRIVATE)
         val maxSizeMb = prefs.getInt("song_cache_max_size", 256)
         val maxSizeBytes = (if (maxSizeMb <= 0) 256L else maxSizeMb.toLong()) * 1024L * 1024L
         val evictor = LeastRecentlyUsedCacheEvictor(maxSizeBytes)
@@ -33,12 +33,35 @@ object MediaModule {
 
     @Provides
     @Singleton
-    fun provideHttpDataSourceFactory(): DefaultHttpDataSource.Factory {
-        return DefaultHttpDataSource.Factory()
-            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0")
-            .setConnectTimeoutMs(5000)
-            .setReadTimeoutMs(5000)
-            .setAllowCrossProtocolRedirects(true)
+    fun provideHttpDataSourceFactory(): androidx.media3.datasource.okhttp.OkHttpDataSource.Factory {
+        val okHttpClient = okhttp3.OkHttpClient.Builder()
+            .dns(com.codetrio.spatialflow.data.network.FastFallbackDns)
+            .connectionPool(okhttp3.ConnectionPool(20, 5, java.util.concurrent.TimeUnit.MINUTES))
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val request = chain.request()
+                val profiled = com.codetrio.spatialflow.util.StreamClientUtils.applyRequestProfile(request.newBuilder(), request).build()
+                val isMedia = request.url.host.contains("googlevideo.com")
+                var response = chain.proceed(profiled)
+                if (isMedia && response.code == 403) {
+                    // Transparent 403 fallback: strip Origin/Referer and retry with ANDROID_VR client User-Agent
+                    response.close()
+                    val fallbackRequest = request.newBuilder()
+                        .header("User-Agent", com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_ANDROID_VR)
+                        .removeHeader("Origin")
+                        .removeHeader("Referer")
+                        .build()
+                    response = chain.proceed(fallbackRequest)
+                }
+                response
+            }
+            .build()
+
+        return androidx.media3.datasource.okhttp.OkHttpDataSource.Factory(okHttpClient)
+            .setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     }
 
     @Provides
@@ -46,19 +69,37 @@ object MediaModule {
     fun provideCacheDataSourceFactory(
         @ApplicationContext context: Context,
         cache: SimpleCache,
-        httpDataSourceFactory: DefaultHttpDataSource.Factory
+        httpDataSourceFactory: androidx.media3.datasource.okhttp.OkHttpDataSource.Factory
     ): CacheDataSource.Factory {
-        val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        val defaultUpstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
         return CacheDataSource.Factory()
             .setCache(cache)
-            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setUpstreamDataSourceFactory(defaultUpstreamFactory)
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 
     @Provides
     @Singleton
-    fun provideStreamRepository(): com.codetrio.spatialflow.domain.repository.StreamRepository {
-        return com.codetrio.spatialflow.data.repository.InnerTubeStreamRepository()
+    fun providePlaybackDataSourceFactory(
+        @ApplicationContext context: Context,
+        cacheDataSourceFactory: CacheDataSource.Factory,
+        httpDataSourceFactory: androidx.media3.datasource.okhttp.OkHttpDataSource.Factory
+    ): com.codetrio.spatialflow.data.sourcepool.SchemeRoutingDataSource.Factory {
+        val directFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        val deezerFactory = com.codetrio.spatialflow.data.deezer.DeezerDecryptingDataSource.Factory(httpDataSourceFactory)
+        val tidalDashFactory = com.codetrio.spatialflow.data.tidal.TidalProgressiveDashDataSource.Factory(okhttp3.OkHttpClient())
+        return com.codetrio.spatialflow.data.sourcepool.SchemeRoutingDataSource.Factory(
+            directFactory = directFactory,
+            cachedFactory = cacheDataSourceFactory,
+            deezerFactory = deezerFactory,
+            tidalDashFactory = tidalDashFactory
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun provideStreamRepository(@ApplicationContext context: Context): com.codetrio.spatialflow.domain.repository.StreamRepository {
+        return com.codetrio.spatialflow.data.repository.InnerTubeStreamRepository(context)
     }
 }
 
@@ -66,4 +107,6 @@ object MediaModule {
 @InstallIn(SingletonComponent::class)
 interface MediaEntryPoint {
     fun cacheDataSourceFactory(): CacheDataSource.Factory
+    fun playbackDataSourceFactory(): com.codetrio.spatialflow.data.sourcepool.SchemeRoutingDataSource.Factory
+    fun simpleCache(): SimpleCache
 }

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Dark sleek gradient background -->
+    <path
+        android:pathData="M0,0h320v180h-320z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0"
+                android:startY="0"
+                android:endX="320"
+                android:endY="180">
+                <item android:offset="0.0" android:color="#FF0F1318" />
+                <item android:offset="0.5" android:color="#FF161C24" />
+                <item android:offset="1.0" android:color="#FF0A0D11" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Cyan / Purple ambient glow orb in background -->
+    <path
+        android:pathData="M160,90m-70,0a70,70 0,1 1,140 0a70,70 0,1 1,-140 0">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="160"
+                android:centerY="90"
+                android:gradientRadius="70">
+                <item android:offset="0.0" android:color="#4D00E5FF" />
+                <item android:offset="0.6" android:color="#207C4DFF" />
+                <item android:offset="1.0" android:color="#00000000" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Glowing rounded inner card container -->
+    <path
+        android:fillColor="#1AFFFFFF"
+        android:strokeColor="#33FFFFFF"
+        android:strokeWidth="1.2"
+        android:pathData="M40,30 h240 a16,16 0 0 1 16,16 v88 a16,16 0 0 1 -16,16 h-240 a16,16 0 0 1 -16,-16 v-88 a16,16 0 0 1 16,-16 z" />
+
+    <!-- Spatial Waves Logo Icon -->
+    <!-- Sound wave / Orbit 1 -->
+    <path
+        android:pathData="M85,90 C85,73.4 98.4,60 115,60 C131.6,60 145,73.4 145,90 C145,106.6 131.6,120 115,120 C98.4,120 85,106.6 85,90 Z"
+        android:strokeWidth="4"
+        android:strokeColor="#8000E5FF" />
+
+    <!-- Sound wave / Orbit 2 Inner -->
+    <path
+        android:pathData="M95,90 C95,79 104,70 115,70 C126,70 135,79 135,90 C135,101 126,110 115,110 C104,110 95,101 95,90 Z"
+        android:strokeWidth="3.5"
+        android:strokeColor="#CC00E5FF" />
+
+    <!-- Center Play/Flow Core -->
+    <path
+        android:pathData="M110,81 L124,90 L110,99 Z"
+        android:fillColor="#FFFFFFFF" />
+
+    <!-- Dynamic Flow accent pill -->
+    <path
+        android:pathData="M165,72 h70 a6,6 0 0 1 6,6 v0 a6,6 0 0 1 -6,6 h-70 a6,6 0 0 1 -6,-6 v0 a6,6 0 0 1 6,-6 z"
+        android:fillColor="#FF00E5FF" />
+
+    <!-- Subtitle bar -->
+    <path
+        android:pathData="M165,92 h45 a4,4 0 0 1 4,4 v0 a4,4 0 0 1 -4,4 h-45 a4,4 0 0 1 -4,-4 v0 a4,4 0 0 1 4,-4 z"
+        android:fillColor="#99FFFFFF" />
+
+    <!-- Audio indicator bars -->
+    <path android:pathData="M222,90 v8" android:strokeWidth="2.5" android:strokeColor="#FF7C4DFF" android:strokeLineCap="round" />
+    <path android:pathData="M228,86 v16" android:strokeWidth="2.5" android:strokeColor="#FF00E5FF" android:strokeLineCap="round" />
+    <path android:pathData="M234,92 v4" android:strokeWidth="2.5" android:strokeColor="#FF00E5FF" android:strokeLineCap="round" />
+
+</vector>

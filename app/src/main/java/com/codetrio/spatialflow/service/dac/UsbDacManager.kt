@@ -88,6 +88,21 @@ object UsbDacManager {
 
     fun updateSourceStats(stats: SourceAudioStats) {
         _liveSourceStats.value = stats
+        val runtime = _runtimeState.value
+        _runtimeState.value = runtime.copy(
+            trackTitle = stats.title ?: runtime.trackTitle,
+            trackArtist = stats.artist ?: runtime.trackArtist,
+            codec = stats.codec ?: runtime.codec,
+            formatTag = stats.formatTag ?: runtime.formatTag,
+            bitrateBps = if (stats.bitrateBps > 0) stats.bitrateBps else runtime.bitrateBps,
+            isPlaying = stats.isPlaying
+        )
+        updateCombinedLiveState()
+    }
+
+    fun setPlaybackActive(isPlaying: Boolean) {
+        _liveSourceStats.value = _liveSourceStats.value.copy(isPlaying = isPlaying)
+        _runtimeState.value = _runtimeState.value.copy(isPlaying = isPlaying)
         updateCombinedLiveState()
     }
 
@@ -197,10 +212,11 @@ object UsbDacManager {
 
             // Extract genuine supported sample rates from AudioDeviceInfo
             val rawRates = usbDevice.sampleRates.toList().filter { it > 0 }.sorted()
-            val sampleRates = if (rawRates.isNotEmpty()) {
+            val sampleRates = if (rawRates.isNotEmpty() && !(rawRates.size == 1 && rawRates[0] == 48000)) {
                 rawRates
             } else {
-                // Query common high-res rates supported by the USB Audio Class driver
+                // When rawRates is empty or solely [48000] (Android framework default policy profile),
+                // query standard high-res rates supported by USB Audio Class devices
                 listOf(44100, 48000, 88200, 96000, 176400, 192000)
             }
 
@@ -489,7 +505,10 @@ object UsbDacManager {
 
         // Real hardware sample rate delivered to the DAC:
         val outputRate = if (isUsbDac) {
-            if (dacSupportsRate && (isBitPerfectMode || hw.supportedSampleRates.isEmpty() || hw.supportedSampleRates.contains(sampleRateHz))) {
+            if (NativeOboeEngine.isStreamOpen) {
+                val oboeRate = NativeOboeEngine.actualSampleRate
+                if (oboeRate > 0) oboeRate else sampleRateHz
+            } else if (dacSupportsRate && (isBitPerfectMode || hw.supportedSampleRates.isEmpty() || hw.supportedSampleRates.contains(sampleRateHz))) {
                 sampleRateHz
             } else {
                 nativeHardwareRate
@@ -514,6 +533,20 @@ object UsbDacManager {
         val bitPerfectResult: BitPerfectResult = when {
             !isUsbDac -> BitPerfectResult.Unavailable
             !isBitPerfectMode -> BitPerfectResult.Fallback("DSP active (AudioFlinger Mixer)")
+            NativeOboeEngine.isStreamOpen && NativeOboeEngine.isExclusive -> {
+                val rate = NativeOboeEngine.actualSampleRate.takeIf { it > 0 } ?: sampleRateHz
+                val depth = NativeOboeEngine.bitDepth.takeIf { it > 0 } ?: bitDepth
+                BitPerfectResult.Verified(rate, depth)
+            }
+            NativeOboeEngine.isStreamOpen && !NativeOboeEngine.isExclusive -> {
+                val rate = NativeOboeEngine.actualSampleRate.takeIf { it > 0 } ?: sampleRateHz
+                val reason = if (rate == sampleRateHz) {
+                    "Oboe AAudio Shared (${rate} Hz Bit-Matched: ${NativeOboeEngine.lastError})"
+                } else {
+                    "Oboe AAudio Shared (AudioFlinger Resampling to ${rate} Hz: ${NativeOboeEngine.lastError})"
+                }
+                BitPerfectResult.Fallback(reason)
+            }
             !dacSupportsRate -> BitPerfectResult.Fallback("DAC hardware does not support ${sampleRateHz / 1000.0} kHz (Resampling to ${outputRate / 1000.0} kHz)")
             !isNativeRateEnabled -> BitPerfectResult.Fallback("Native sample rate disabled")
             Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE -> {
@@ -558,34 +591,60 @@ object UsbDacManager {
             else -> "${bitDepth}-bit PCM"
         }
 
-        val outputDepth = if (isUsbDac) bitDepth else 16
+        val outputDepth = if (isUsbDac) {
+            if (NativeOboeEngine.isStreamOpen && NativeOboeEngine.bitDepth > 0) NativeOboeEngine.bitDepth else bitDepth
+        } else 16
 
+        val prevSrc = _liveSourceStats.value
+        val isOboeVerified = isUsbDac && NativeOboeEngine.isStreamOpen && NativeOboeEngine.isExclusive
         val newRuntimeState = BitPerfectRuntimeState(
+            trackTitle = prevSrc.title,
+            trackArtist = prevSrc.artist,
+            codec = prevSrc.codec,
+            formatTag = prevSrc.formatTag,
+            bitrateBps = prevSrc.bitrateBps,
+            isPlaying = prevSrc.isPlaying,
             sourceEncoding = encodingName,
             sourceBitDepth = bitDepth,
             sourceSampleRate = sampleRateHz,
-            outputEncoding = if (isUsbDac) (if (verified || nativeRateMatched) encodingName else "16-bit PCM (Mixer)") else "16-bit Integer PCM",
+            outputEncoding = if (isUsbDac) (if (verified || nativeRateMatched || isOboeVerified) encodingName else "16-bit PCM (Mixer)") else "16-bit Integer PCM",
             outputBitDepth = outputDepth,
             outputSampleRate = outputRate,
             channels = channelCount,
             directPlaybackSupported = directSupported,
-            nativeRateMatched = nativeRateMatched,
-            resamplerActive = isResamplerActive,
+            nativeRateMatched = nativeRateMatched || isOboeVerified,
+            resamplerActive = isResamplerActive && !isOboeVerified,
             dspActive = !isBitPerfectMode || !isUsbDac,
             softwareVolumeActive = false,
-            usbExclusiveActive = isUsbDac && verified,
-            mixerBitPerfectActive = verified,
-            verifiedBitPerfect = verified,
+            usbExclusiveActive = isUsbDac && (verified || isOboeVerified),
+            mixerBitPerfectActive = verified || isOboeVerified,
+            verifiedBitPerfect = verified || isOboeVerified,
+            oboeExclusiveActive = isOboeVerified,
             failureReason = failureReason,
             bitPerfectResult = bitPerfectResult
         )
         _runtimeState.value = newRuntimeState
 
-        _liveSourceStats.value = SourceAudioStats(
+        if (isUsbDac && NativeOboeEngine.isStreamOpen) {
+            val oboeSummary = if (NativeOboeEngine.isExclusive) {
+                "Oboe AAudio Exclusive MMAP (Bit-Exact)"
+            } else {
+                "Oboe AAudio Shared (${NativeOboeEngine.sharingMode})"
+            }
+            _liveDacStats.value = hw.copy(
+                isBitPerfectVerified = NativeOboeEngine.isExclusive,
+                verificationStatus = if (NativeOboeEngine.isExclusive) BitPerfectVerificationStatus.VERIFIED else BitPerfectVerificationStatus.FALLBACK_SYSTEM_MIXER,
+                verificationDetails = if (NativeOboeEngine.isExclusive) "Oboe AAudio MMAP Exclusive Route (Bit-Exact ${outputRate}Hz)" else "Oboe AAudio Shared (${NativeOboeEngine.sharingMode}: ${NativeOboeEngine.lastError})",
+                activeHardwareSampleRateHz = outputRate,
+                activeHardwareEncoding = "$outputDepth-bit Direct PCM",
+                mixerModeSummary = oboeSummary
+            )
+        }
+
+        _liveSourceStats.value = prevSrc.copy(
             sampleRateHz = sampleRateHz,
             bitDepth = bitDepth,
-            channelCount = channelCount,
-            bitrateBps = _liveSourceStats.value.bitrateBps
+            channelCount = channelCount
         )
         _livePipelineStats.value = PipelineAudioStats(
             pcmEncoding = encodingName,
@@ -597,6 +656,43 @@ object UsbDacManager {
         updateCombinedLiveState()
 
         Log.i(TAG, "Audiophile Runtime State: Source=${bitDepth}-bit/${sampleRateHz}Hz Output=${outputDepth}-bit/${outputRate}Hz Verified=$verified Status=\"${newRuntimeState.liveStatusDisplay}\"")
+    }
+
+    /**
+     * Called when native Oboe establishes an exclusive AAudio MMAP bit-perfect stream to the DAC.
+     */
+    fun onOboeExclusiveActive(sampleRateHz: Int, bitDepth: Int) {
+        val hw = _liveDacStats.value
+        val src = _liveSourceStats.value
+        val runtime = _runtimeState.value
+
+        _liveDacStats.value = hw.copy(
+            isBitPerfectVerified = true,
+            verificationStatus = BitPerfectVerificationStatus.VERIFIED,
+            verificationDetails = "Oboe AAudio MMAP Exclusive Route (Bit-Perfect)",
+            activeHardwareSampleRateHz = sampleRateHz,
+            activeHardwareEncoding = "$bitDepth-bit Direct PCM",
+            mixerModeSummary = "Oboe AAudio Exclusive MMAP (Bypassing AudioFlinger)"
+        )
+
+        _runtimeState.value = runtime.copy(
+            sourceBitDepth = src.bitDepth.takeIf { it > 0 } ?: bitDepth,
+            sourceSampleRate = src.sampleRateHz.takeIf { it > 0 } ?: sampleRateHz,
+            outputBitDepth = bitDepth,
+            outputSampleRate = sampleRateHz,
+            nativeRateMatched = true,
+            resamplerActive = false,
+            dspActive = false,
+            usbExclusiveActive = true,
+            mixerBitPerfectActive = true,
+            verifiedBitPerfect = true,
+            oboeExclusiveActive = true,
+            bitPerfectResult = BitPerfectResult.Verified(sampleRateHz, bitDepth),
+            failureReason = null
+        )
+
+        updateCombinedLiveState()
+        Log.i(TAG, "Oboe Exclusive Bit-Perfect stream active: ${sampleRateHz}Hz, ${bitDepth}-bit")
     }
 
     /**

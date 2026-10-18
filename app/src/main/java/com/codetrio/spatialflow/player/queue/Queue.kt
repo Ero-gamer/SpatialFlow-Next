@@ -1,5 +1,6 @@
 package com.codetrio.spatialflow.player.queue
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -13,6 +14,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +47,13 @@ import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.PlaylistAdd
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import java.util.Locale
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -60,10 +72,19 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -79,15 +100,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import com.codetrio.spatialflow.R
 import com.codetrio.spatialflow.data.innertube.InnerTubeClient
 import com.codetrio.spatialflow.data.innertube.InnerTubeParser
+import com.codetrio.spatialflow.data.innertube.YouTubeMusic
 import com.codetrio.spatialflow.data.innertube.path
 import com.codetrio.spatialflow.model.SongItem
 import com.codetrio.spatialflow.ui.player.deriveArtworkSurfaceColor
 import com.codetrio.spatialflow.viewmodel.PlayerSharedViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
@@ -135,19 +157,19 @@ class StaticQueue(
     override suspend fun nextPage(): List<SongItem> = emptyList()
 }
 
-class YouTubeQueue(
-    private val videoId: String? = null,
-    private val playlistId: String? = null,
-    private val initialParams: String? = null,
-    private var continuationToken: String? = null,
+open class YouTubeQueue(
+    protected val videoId: String? = null,
+    protected val playlistId: String? = null,
+    protected val initialParams: String? = null,
+    protected var continuationToken: String? = null,
     override val preloadItem: SongItem? = null,
-    private val followAutomixPreview: Boolean = true,
-    private val startIndex: Int = 0,
-    private val position: Long = 0L
+    protected val followAutomixPreview: Boolean = true,
+    protected val startIndex: Int = 0,
+    protected val position: Long = 0L
 ) : Queue {
 
     override var currentTitle: String? = null
-        private set
+        protected set
 
     companion object {
         fun radio(song: SongItem, params: String? = null) = YouTubeQueue(
@@ -157,12 +179,29 @@ class YouTubeQueue(
             preloadItem = song,
             followAutomixPreview = true
         )
+
+        fun playlist(
+            playlistId: String,
+            videoId: String? = null,
+            initialParams: String? = null,
+            preloadItem: SongItem? = null,
+            startIndex: Int = 0,
+            followAutomixPreview: Boolean = true
+        ) = YouTubeQueue(
+            videoId = videoId,
+            playlistId = if (playlistId.startsWith("VL")) playlistId else "VL$playlistId",
+            initialParams = initialParams,
+            preloadItem = preloadItem,
+            followAutomixPreview = followAutomixPreview,
+            startIndex = startIndex
+        )
     }
 
     override suspend fun getInitialStatus(): Queue.Status {
         val status = fetchNext(isInitial = true)
-        val matchedIndex = if (preloadItem != null) {
-            status.items.indexOfFirst { it.videoId == preloadItem.videoId }
+        val preload = preloadItem
+        val matchedIndex = if (preload != null) {
+            status.items.indexOfFirst { it.videoId == preload.videoId }
         } else {
             startIndex
         }
@@ -228,7 +267,8 @@ class YouTubeQueue(
             ))
         }
 
-        continuationToken = playlistPanel?.path("continuations.0.nextRadioContinuationData.continuation")?.asString
+        continuationToken = YouTubeMusic.extractContinuationToken(playlistPanel, playlistContents)
+            ?: playlistPanel?.path("continuations.0.nextRadioContinuationData.continuation")?.asString
             ?: playlistPanel?.path("continuations.0.nextContinuationData.continuation")?.asString
 
         val automixRenderer = findJsonObjectRecursively(response, "automixPreviewVideoRenderer")
@@ -267,7 +307,8 @@ class YouTubeQueue(
                         }
                     }
                     
-                    val autoContinuation = autoPlaylistPanel?.path("continuations.0.nextRadioContinuationData.continuation")?.asString
+                    val autoContinuation = YouTubeMusic.extractContinuationToken(autoPlaylistPanel, autoPlaylistContents)
+                        ?: autoPlaylistPanel?.path("continuations.0.nextRadioContinuationData.continuation")?.asString
                         ?: autoPlaylistPanel?.path("continuations.0.nextContinuationData.continuation")?.asString
                     if (autoContinuation != null) {
                         continuationToken = autoContinuation
@@ -328,10 +369,60 @@ class YouTubeQueue(
     }
 }
 
+/**
+ * Dedicated Queue implementation for YouTube Music Playlists.
+ * Automatically prepends "VL" if necessary, resolves playlist tracks, handles paged continuations,
+ * and seamlessly transitions into Automix when autoplay is enabled.
+ */
+class YouTubePlaylistQueue(
+    playlistId: String,
+    videoId: String? = null,
+    initialParams: String? = null,
+    preloadItem: SongItem? = null,
+    startIndex: Int = 0,
+    followAutomixPreview: Boolean = true
+) : YouTubeQueue(
+    videoId = videoId,
+    playlistId = if (playlistId.startsWith("VL")) playlistId else "VL$playlistId",
+    initialParams = initialParams,
+    preloadItem = preloadItem,
+    followAutomixPreview = followAutomixPreview,
+    startIndex = startIndex
+)
+
+/**
+ * Dedicated Queue implementation for Local / Database Playlists.
+ */
+class LocalPlaylistQueue(
+    val playlistTitle: String,
+    private val songs: List<SongItem>,
+    private val startIndex: Int = 0,
+    private val position: Long = 0L
+) : Queue {
+
+    override val currentTitle: String = playlistTitle
+    override val preloadItem: SongItem? = songs.getOrNull(startIndex)
+
+    override suspend fun getInitialStatus(): Queue.Status {
+        return Queue.Status(
+            title = playlistTitle,
+            items = songs,
+            mediaItemIndex = startIndex.coerceIn(0, (songs.size - 1).coerceAtLeast(0)),
+            position = position
+        )
+    }
+
+    override fun hasNextPage(): Boolean = false
+
+    override suspend fun nextPage(): List<SongItem> = emptyList()
+}
+
 // --- 2. Reordering Core Section ---
 
-// Custom drag-and-drop implementation has been simplified and consolidated.
-// We use sh.calvin.reorderable directly inside the UI presentation section below.
+data class QueueItemWrapper(
+    val key: String,
+    val song: SongItem
+)
 
 // --- 3. UI Presentation Section ---
 
@@ -356,32 +447,151 @@ fun SlidingQueueDrawer(
     isDark: Boolean,
     isAutoplayEnabled: Boolean,
     onAutoplayToggle: (Boolean) -> Unit,
+    queueTitle: String? = null,
+    onSaveQueueClick: (() -> Unit)? = null,
+    onClearUpcomingClick: (() -> Unit)? = null,
+    onClearAllClick: (() -> Unit)? = null,
+    // Real-time upward swipe distance from parent FullPlayer (for queue peek-open effect)
+    peekOffsetPx: Float = 0f,
+    peekOffsetPxProvider: (() -> Float)? = null,
+    onQueueInteractingChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val configuration = LocalConfiguration.current
     val screenHeight = configuration.screenHeightDp.dp
-    
-    val slidingOffset by animateDpAsState(
-        targetValue = if (isQueueExpanded) 0.dp else screenHeight + 100.dp,
-        animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f),
-        label = "QueueSlidingOffset"
-    )
+    val density = LocalDensity.current
+    val screenHeightPx = with(density) { screenHeight.toPx() }
+    // 25% of screen height = dismiss threshold
+    val dismissThresholdPx = screenHeightPx * 0.25f
+    val coroutineScope = rememberCoroutineScope()
 
-    val queueCornerRadius by animateDpAsState(
-        targetValue = if (isQueueExpanded) 0.dp else 32.dp,
-        animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f),
-        label = "QueueCornerRadius"
-    )
-    val safeCornerRadius = queueCornerRadius.coerceAtLeast(0.dp)
+    // ── Hoisted list state so NestedScrollConnection can read scroll position ─────
+    val lazyListState = rememberLazyListState()
 
-    val queueBgColor = deriveArtworkSurfaceColor(
-        sourceColor = Color(playerBackgroundColor),
-        isDark = isDark,
-        darkLightness = 0.12f,
-        lightLightness = 0.88f,
-        darkSaturationRange = 0.28f..0.48f,
-        lightSaturationRange = 0.24f..0.42f
-    )
+    val slidingAnimatable = remember { Animatable(screenHeightPx + 100f) }
+
+    // Expose current value as a State for graphicsLayer / derivedStateOf reads.
+    val dragOffsetPx = slidingAnimatable.value
+
+    // Reset drag when queue closes so it never leaks.
+    LaunchedEffect(isQueueExpanded) {
+        onQueueInteractingChanged(true)
+        if (isQueueExpanded) {
+            val peek = peekOffsetPxProvider?.invoke() ?: peekOffsetPx
+            val startY = (screenHeightPx - peek).coerceAtMost(screenHeightPx)
+            // Snap to the current peek position if starting from collapsed
+            if (slidingAnimatable.value >= screenHeightPx - 5f) {
+                slidingAnimatable.snapTo(startY)
+            }
+            slidingAnimatable.animateTo(
+                targetValue = 0f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            )
+        } else {
+            slidingAnimatable.animateTo(
+                targetValue = screenHeightPx,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium
+                )
+            )
+        }
+        onQueueInteractingChanged(false)
+    }
+
+    // ── NestedScrollConnection: intercepts downward overscroll from LazyColumn ──────
+    // Handles the case where the user is swiping down while viewing the LIST.
+    val haptic = LocalHapticFeedback.current
+    val nestedScrollConnection = remember(isQueueExpanded) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                val isAtTop = lazyListState.firstVisibleItemIndex == 0 &&
+                    lazyListState.firstVisibleItemScrollOffset == 0
+                return if (available.y > 0f && isQueueExpanded && isAtTop) {
+                    onQueueInteractingChanged(true)
+                    coroutineScope.launch {
+                        slidingAnimatable.snapTo((slidingAnimatable.value + available.y).coerceIn(0f, screenHeightPx))
+                    }
+                    available // fully consume — prevent overscroll glow
+                } else if (available.y < 0f && slidingAnimatable.value > 0f) {
+                    onQueueInteractingChanged(true)
+                    val newDrag = (slidingAnimatable.value + available.y).coerceIn(0f, screenHeightPx)
+                    val consumedY = slidingAnimatable.value - newDrag
+                    coroutineScope.launch {
+                        slidingAnimatable.snapTo(newDrag)
+                    }
+                    Offset(0f, -consumedY)
+                } else {
+                    Offset.Zero
+                }
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                return if (slidingAnimatable.value > 0f) {
+                    val shouldDismiss = if (available.y < -1500f) {
+                        false
+                    } else if (available.y > 1500f) {
+                        true
+                    } else {
+                        slidingAnimatable.value > dismissThresholdPx
+                    }
+                    
+                    if (shouldDismiss) {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onQueueExpandedChange(false)
+                    } else {
+                        coroutineScope.launch {
+                            slidingAnimatable.animateTo(
+                                targetValue = 0f,
+                                animationSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
+                        }
+                    }
+                    onQueueInteractingChanged(false)
+                    if (shouldDismiss) available else Velocity.Zero
+                } else {
+                    onQueueInteractingChanged(false)
+                    Velocity.Zero
+                }
+            }
+        }
+    }
+
+    // ── Header draggable: handles swipes on the non-scrollable header area ────────
+    val headerDraggableState = rememberDraggableState { delta ->
+        coroutineScope.launch {
+            slidingAnimatable.snapTo((slidingAnimatable.value + delta).coerceIn(0f, screenHeightPx))
+        }
+    }
+
+    // ── Sliding fraction: 0 = fully open, 1 = fully dismissed ────────────────────
+    val closeFraction by derivedStateOf {
+        (slidingAnimatable.value / screenHeightPx).coerceIn(0f, 1f)
+    }
+    // Opening peek: how much the queue should rise from the bottom while the user
+    // is swiping up before releasing (driven by FullPlayer's peekOffsetPx).
+    val openFraction by derivedStateOf {
+        val peek = peekOffsetPxProvider?.invoke() ?: peekOffsetPx
+        (peek / screenHeightPx).coerceIn(0f, 0.6f)
+    }
+
+    val queueBgColor = remember(playerBackgroundColor, isDark) {
+        val baseColor = if (playerBackgroundColor != 0) Color(playerBackgroundColor) else if (isDark) Color(0xFF141418) else Color(0xFFF2F2F7)
+        deriveArtworkSurfaceColor(
+            sourceColor = baseColor,
+            isDark = isDark,
+            darkLightness = 0.12f,
+            lightLightness = 0.92f,
+            darkSaturationRange = 0.28f..0.48f,
+            lightSaturationRange = 0.24f..0.42f
+        ).copy(alpha = 1f)
+    }
 
     val queueTrayBackgroundColor = remember(playerBackgroundColor, isDark) {
         deriveArtworkSurfaceColor(
@@ -391,7 +601,7 @@ fun SlidingQueueDrawer(
             lightLightness = 0.80f,
             darkSaturationRange = 0.28f..0.52f,
             lightSaturationRange = 0.20f..0.44f
-        )
+        ).copy(alpha = 1f)
     }
 
     val queueTrayInactiveButtonColor = remember(queueTrayBackgroundColor, isDark) {
@@ -413,32 +623,66 @@ fun SlidingQueueDrawer(
     val queueTrayInactiveContentColor = if (isDark) Color.White.copy(alpha = 0.8f) else Color.Black.copy(alpha = 0.8f)
     val queueTrayActiveContentColor = if (isDark) Color.Black else Color.White
 
-    val haptic = LocalHapticFeedback.current
-
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .fillMaxHeight()
-            .offset { androidx.compose.ui.unit.IntOffset(0, slidingOffset.roundToPx()) },
-        shape = RoundedCornerShape(topStart = safeCornerRadius, topEnd = safeCornerRadius),
-        color = queueBgColor
+            // ── Sliding fraction visual effect ────────────────────────────────────
+            // Scale during close-drag. Transform origin at top so the sheet
+            // appears to "fall" away from the top edge.
+            .graphicsLayer {
+                val scale = 1f - closeFraction * 0.04f
+                scaleX = scale
+                scaleY = scale
+                val peek = peekOffsetPxProvider?.invoke() ?: peekOffsetPx
+                alpha = if (!isQueueExpanded && peek == 0f) 0f else 1f
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 0f)
+            }
+            // Combined offset: animated position + live close drag
+            .offset {
+                val peek = peekOffsetPxProvider?.invoke() ?: peekOffsetPx
+                val isFullyClosed = !isQueueExpanded && peek == 0f && (slidingAnimatable.value >= screenHeightPx - 5f || !slidingAnimatable.isRunning)
+                val currentY = if (isFullyClosed) {
+                    100000f
+                } else if (isQueueExpanded) {
+                    slidingAnimatable.value
+                } else {
+                    screenHeightPx - peek
+                }
+                androidx.compose.ui.unit.IntOffset(
+                    x = 0,
+                    y = currentY.toInt().coerceAtLeast(0)
+                )
+            },
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp, bottomStart = 0.dp, bottomEnd = 0.dp),
+        color = queueBgColor,
+        shadowElevation = 16.dp
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            val lazyListState = rememberLazyListState()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                // NestedScrollConnection sits here — inside Surface, outside LazyColumn.
+                // Events bubble up from LazyColumn → this connection → stops here.
+                .nestedScroll(nestedScrollConnection)
+        ) {
 
-            var localSongList by remember(songList) { mutableStateOf(songList) }
+            var localQueueItems by remember {
+                mutableStateOf(songList.mapIndexed { idx, song ->
+                    QueueItemWrapper("q_${song.id}_${System.identityHashCode(song)}_$idx", song)
+                })
+            }
             var lastMovedFrom by remember { mutableStateOf<Int?>(null) }
             var lastMovedTo by remember { mutableStateOf<Int?>(null) }
             var searchQuery by remember { mutableStateOf("") }
             var isSearchExpanded by remember { mutableStateOf(false) }
 
-            val filteredSongList = remember(localSongList, searchQuery) {
+            val filteredQueueItems = remember(localQueueItems, searchQuery) {
                 if (searchQuery.isEmpty()) {
-                    localSongList
+                    localQueueItems
                 } else {
-                    localSongList.filter {
-                        it.title.contains(searchQuery, ignoreCase = true) ||
-                        it.artist.contains(searchQuery, ignoreCase = true)
+                    localQueueItems.filter {
+                        it.song.title.contains(searchQuery, ignoreCase = true) ||
+                                it.song.artist.contains(searchQuery, ignoreCase = true)
                     }
                 }
             }
@@ -446,10 +690,10 @@ fun SlidingQueueDrawer(
             val reorderableState = rememberReorderableLazyListState(
                 lazyListState = lazyListState,
                 onMove = { from, to ->
-                    val fromIndex = localSongList.indexOfFirst { it.id == from.key }
-                    val toIndex = localSongList.indexOfFirst { it.id == to.key }
+                    val fromIndex = localQueueItems.indexOfFirst { it.key == from.key }
+                    val toIndex = localQueueItems.indexOfFirst { it.key == to.key }
                     if (fromIndex != -1 && toIndex != -1 && fromIndex != toIndex) {
-                        localSongList = localSongList.toMutableList().apply {
+                        localQueueItems = localQueueItems.toMutableList().apply {
                             add(toIndex, removeAt(fromIndex))
                         }
                         if (lastMovedFrom == null) {
@@ -463,7 +707,19 @@ fun SlidingQueueDrawer(
 
             LaunchedEffect(songList) {
                 if (!reorderableState.isAnyItemDragging) {
-                    localSongList = songList
+                    val currentSongsInLocal = localQueueItems.map { it.song }
+                    if (currentSongsInLocal != songList) {
+                        val pool = localQueueItems.toMutableList()
+                        val newWrappers = songList.mapIndexed { idx, song ->
+                            val matchIndex = pool.indexOfFirst { it.song.id == song.id }
+                            if (matchIndex != -1) {
+                                pool.removeAt(matchIndex)
+                            } else {
+                                QueueItemWrapper("q_${song.id}_${System.currentTimeMillis()}_$idx", song)
+                            }
+                        }
+                        localQueueItems = newWrappers
+                    }
                 }
             }
 
@@ -483,7 +739,7 @@ fun SlidingQueueDrawer(
             LaunchedEffect(isQueueExpanded, currentSongIndex) {
                 if (isQueueExpanded && currentSongIndex in songList.indices) {
                     val currentSongId = songList[currentSongIndex].id
-                    val localIndex = localSongList.indexOfFirst { it.id == currentSongId }
+                    val localIndex = localQueueItems.indexOfFirst { it.song.id == currentSongId }
                     if (localIndex != -1) {
                         val distance = abs(lazyListState.firstVisibleItemIndex - localIndex)
                         if (distance > 24) {
@@ -500,86 +756,281 @@ fun SlidingQueueDrawer(
                     .fillMaxSize()
                     .statusBarsPadding()
             ) {
+                // ── Draggable header area: handle pill + title row + subtitle/controls ──────
+                // These are siblings of the LazyColumn, so NestedScrollConnection never
+                // sees their touch events. We add a separate draggable() here, which
+                // only fires for the header region, preventing any LazyColumn conflict.
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 12.dp, bottom = 4.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 36.dp, height = 4.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(
-                                if (isDark) Color.White.copy(alpha = 0.2f)
-                                else Color.Black.copy(alpha = 0.12f)
-                            )
-                    )
-                }
-
-                // Row 1: Title and Collapse
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 24.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Playback Queue",
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = (-0.5).sp
-                        ),
-                        color = if (isDark) Color.White else Color.Black
-                    )
-
-                    IconButton(
-                        onClick = { onQueueExpandedChange(false) },
-                        colors = IconButtonDefaults.iconButtonColors(
-                            containerColor = (if (isDark) Color.White else Color.Black).copy(alpha = 0.05f)
-                        ),
-                        modifier = Modifier.size(40.dp)
-                    ) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_keyboard_arrow_down),
-                            contentDescription = "Collapse Queue",
-                            tint = if (isDark) Color.White else Color.Black,
-                            modifier = Modifier.size(24.dp)
+                        .draggable(
+                            state = headerDraggableState,
+                            orientation = Orientation.Vertical,
+                            onDragStarted = { onQueueInteractingChanged(true) },
+                            onDragStopped = { velocity ->
+                                onQueueInteractingChanged(false)
+                                coroutineScope.launch {
+                                    val shouldDismiss = if (velocity < -1500f) {
+                                        false
+                                    } else if (velocity > 1500f) {
+                                        true
+                                    } else {
+                                        slidingAnimatable.value > dismissThresholdPx
+                                    }
+                                    
+                                    if (shouldDismiss) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onQueueExpandedChange(false)
+                                    } else {
+                                        slidingAnimatable.animateTo(
+                                            0f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            )
+                                        )
+                                    }
+                                }
+                            }
                         )
-                    }
-                }
-
-                // Row 2: Subtitle and Controls (Autoplay, Search)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 24.dp, end = 20.dp, bottom = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = "${songList.size} tracks • Playing next",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f),
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.weight(1f)
-                    )
-                    
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        // Autoplay Toggle Switch
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    Column {
+                        // Handle pill — visual cue + tap-to-close
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(32.dp)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { onQueueExpandedChange(false) }
+                                ),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "Autoplay",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.6f)
+                            // Pill expands as close-fraction grows — gives tactile visual feedback
+                            Box(
+                                modifier = Modifier
+                                    .size(
+                                        width = (36f + closeFraction * 20f).dp,
+                                        height = 4.dp
+                                    )
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(
+                                        (if (isDark) Color.White else Color.Black)
+                                            .copy(alpha = 0.2f + closeFraction * 0.3f)
+                                    )
                             )
+                        }
+
+                        // Row 1: "Playing from" + Mix Title + Summary + Actions (Save, Clear)
+                        val queueSummaryText = remember(songList, currentSongIndex) {
+                            formatQueueSummaryText(songList, currentSongIndex)
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 24.dp, end = 16.dp, top = 4.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Playing from",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f),
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = queueTitle ?: songList.getOrNull(currentSongIndex)?.artist?.let { "$it Mix" } ?: "Playback Queue",
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontWeight = FontWeight.Bold,
+                                        letterSpacing = (-0.3).sp
+                                    ),
+                                    color = if (isDark) Color.White else Color.Black,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = queueSummaryText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.55f),
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (onSaveQueueClick != null) {
+                                    val saveInteractionSource = remember { MutableInteractionSource() }
+                                    val saveIsPressed by saveInteractionSource.collectIsPressedAsState()
+                                    val saveScale by animateFloatAsState(
+                                        targetValue = if (saveIsPressed) 0.90f else 1f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        ),
+                                        label = "saveScale"
+                                    )
+
+                                    Surface(
+                                        onClick = onSaveQueueClick,
+                                        interactionSource = saveInteractionSource,
+                                        shape = RoundedCornerShape(20.dp),
+                                        color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.1f),
+                                        modifier = Modifier.graphicsLayer {
+                                            scaleX = saveScale
+                                            scaleY = saveScale
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.PlaylistAdd,
+                                                contentDescription = "Save Queue to Playlist",
+                                                tint = if (isDark) Color.White else Color.Black,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = "Save",
+                                                style = MaterialTheme.typography.labelLarge,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isDark) Color.White else Color.Black
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (onClearUpcomingClick != null || onClearAllClick != null) {
+                                    var showClearMenu by remember { mutableStateOf(false) }
+                                    val clearInteractionSource = remember { MutableInteractionSource() }
+                                    val clearIsPressed by clearInteractionSource.collectIsPressedAsState()
+                                    val clearScale by animateFloatAsState(
+                                        targetValue = if (clearIsPressed) 0.90f else 1f,
+                                        animationSpec = spring(
+                                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                                            stiffness = Spring.StiffnessMedium
+                                        ),
+                                        label = "clearScale"
+                                    )
+
+                                    Box {
+                                        Surface(
+                                            onClick = { showClearMenu = true },
+                                            interactionSource = clearInteractionSource,
+                                            shape = RoundedCornerShape(20.dp),
+                                            color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.1f),
+                                            modifier = Modifier.graphicsLayer {
+                                                scaleX = clearScale
+                                                scaleY = clearScale
+                                            }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.DeleteSweep,
+                                                    contentDescription = "Clear Queue Options",
+                                                    tint = if (isDark) Color.White else Color.Black,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                            }
+                                        }
+
+                                        DropdownMenu(
+                                            expanded = showClearMenu,
+                                            onDismissRequest = { showClearMenu = false },
+                                            modifier = Modifier.background(
+                                                if (isDark) Color(0xFF222226) else Color(0xFFF4F4F8)
+                                            )
+                                        ) {
+                                            if (onClearUpcomingClick != null) {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            "Clear Up Next",
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = if (isDark) Color.White else Color.Black
+                                                        )
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Rounded.DeleteSweep,
+                                                            contentDescription = null,
+                                                            tint = if (isDark) Color.White else Color.Black
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        showClearMenu = false
+                                                        onClearUpcomingClick()
+                                                    }
+                                                )
+                                            }
+                                            if (onClearAllClick != null) {
+                                                DropdownMenuItem(
+                                                    text = {
+                                                        Text(
+                                                            "Clear All Except Current",
+                                                            fontWeight = FontWeight.Medium,
+                                                            color = MaterialTheme.colorScheme.error
+                                                        )
+                                                    },
+                                                    leadingIcon = {
+                                                        Icon(
+                                                            Icons.Rounded.Clear,
+                                                            contentDescription = null,
+                                                            tint = MaterialTheme.colorScheme.error
+                                                        )
+                                                    },
+                                                    onClick = {
+                                                        showClearMenu = false
+                                                        onClearAllClick()
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Divider below Song Title / Mix Title
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 4.dp)
+                                .height(1.dp)
+                                .background((if (isDark) Color.White else Color.Black).copy(alpha = 0.08f))
+                        )
+
+                        // Autoplay Row (Bigger text + PlayArrow filled icon on thumb when checked)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 24.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Autoplay",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isDark) Color.White else Color.Black
+                                )
+                                Text(
+                                    text = "Add similar content for endless listening",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f)
+                                )
+                            }
                             Switch(
                                 checked = isAutoplayEnabled,
                                 onCheckedChange = onAutoplayToggle,
@@ -592,349 +1043,332 @@ fun SlidingQueueDrawer(
                                         )
                                     } else null
                                 },
-                                modifier = Modifier.scale(0.75f)
+                                modifier = Modifier.scale(0.85f)
                             )
                         }
 
-                        // Search Toggle Button
-                        IconButton(
-                            onClick = {
-                                isSearchExpanded = !isSearchExpanded
-                                if (!isSearchExpanded) {
-                                    searchQuery = ""
-                                }
-                            },
-                            modifier = Modifier.size(36.dp),
-                            colors = IconButtonDefaults.iconButtonColors(
-                                containerColor = if (isSearchExpanded) dynamicAccentColor.copy(alpha = 0.15f) else Color.Transparent
-                            )
+                        // Divider below Autoplay Row (Full Width)
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                                .height(1.dp)
+                                .background((if (isDark) Color.White else Color.Black).copy(alpha = 0.08f))
+                        )
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        LazyColumn(
+                            state = lazyListState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentPadding = PaddingValues(
+                                start = 20.dp,
+                                end = 20.dp,
+                                top = 4.dp,
+                                bottom = 120.dp
+                            ),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Search,
-                                contentDescription = "Toggle Search",
-                                tint = if (isSearchExpanded) dynamicAccentColor else (if (isDark) Color.White else Color.Black).copy(alpha = 0.7f),
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-                }
+                            val currentSongId = songList.getOrNull(currentSongIndex)?.id
+                            itemsIndexed(
+                                items = filteredQueueItems,
+                                key = { _, item -> item.key },
+                                contentType = { _, _ -> "queue-song" }
+                            ) { index, item ->
+                                val song = item.song
+                                val isPlaying = (song.id == currentSongId)
 
-                // Beautiful Expandable Search/Filter Input
-                AnimatedVisibility(
-                    visible = isSearchExpanded,
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut()
-                ) {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 24.dp, vertical = 8.dp),
-                        placeholder = {
-                            Text(
-                                text = "Search tracks in queue...",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.5f)
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Rounded.Search,
-                                contentDescription = null,
-                                tint = dynamicAccentColor
-                            )
-                        },
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                IconButton(onClick = { searchQuery = "" }) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.Clear,
-                                        contentDescription = "Clear search",
-                                        tint = (if (isDark) Color.White else Color.Black).copy(alpha = 0.6f)
+                                if (searchQuery.isNotEmpty()) {
+                                    val originalIndex = songList.indexOfFirst { it.id == song.id }
+                                    RebuiltQueueListItem(
+                                        song = song,
+                                        isPlaying = isPlaying,
+                                        isDark = isDark,
+                                        dynamicAccentColor = dynamicAccentColor,
+                                        onClick = {
+                                            if (originalIndex != -1) {
+                                                onPlaySongAtIndex(originalIndex)
+                                            }
+                                        },
+                                        onRemoveClick = {
+                                            if (originalIndex != -1) {
+                                                onRemoveSongAtIndex(originalIndex)
+                                            }
+                                        },
+                                        dragHandle = {}
                                     )
+                                } else {
+                                    ReorderableItem(
+                                        state = reorderableState,
+                                        key = item.key
+                                    ) { isDragging ->
+                                        val scale by animateFloatAsState(
+                                            targetValue = if (isDragging) 1.03f else 1f,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioNoBouncy,
+                                                stiffness = Spring.StiffnessMediumLow
+                                            ),
+                                            label = "scaleAnimation"
+                                        )
+
+                                        RebuiltQueueListItem(
+                                            song = song,
+                                            isPlaying = isPlaying,
+                                            isDark = isDark,
+                                            dynamicAccentColor = dynamicAccentColor,
+                                            onClick = {
+                                                val currentIndexInList = localQueueItems.indexOfFirst { it.key == item.key }
+                                                if (currentIndexInList != -1) {
+                                                    onPlaySongAtIndex(currentIndexInList)
+                                                }
+                                            },
+                                            onRemoveClick = {
+                                                val currentIndexInList = localQueueItems.indexOfFirst { it.key == item.key }
+                                                if (currentIndexInList != -1) {
+                                                    onRemoveSongAtIndex(currentIndexInList)
+                                                }
+                                            },
+                                            dragHandle = {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(44.dp)
+                                                        .draggableHandle(
+                                                            onDragStarted = {
+                                                                haptic.performHapticFeedback(
+                                                                    HapticFeedbackType.LongPress
+                                                                )
+                                                            },
+                                                            onDragStopped = {
+                                                                haptic.performHapticFeedback(
+                                                                    HapticFeedbackType.LongPress
+                                                                )
+                                                            }
+                                                        ),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.Menu,
+                                                        contentDescription = "Drag to reorder",
+                                                        tint = (if (isDark) Color.White else Color.Black).copy(
+                                                            alpha = 0.35f
+                                                        ),
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                }
+                                            },
+                                            modifier = Modifier
+                                                .graphicsLayer {
+                                                    scaleX = scale
+                                                    scaleY = scale
+                                                    compositingStrategy =
+                                                        androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                                                }
+                                        )
+                                    }
                                 }
                             }
-                        },
-                        singleLine = true,
-                        shape = CircleShape,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedContainerColor = (if (isDark) Color.White else Color.Black).copy(alpha = 0.05f),
-                            unfocusedContainerColor = (if (isDark) Color.White else Color.Black).copy(alpha = 0.03f),
-                            focusedBorderColor = dynamicAccentColor,
-                            unfocusedBorderColor = (if (isDark) Color.White else Color.Black).copy(alpha = 0.08f),
-                            focusedTextColor = if (isDark) Color.White else Color.Black,
-                            unfocusedTextColor = if (isDark) Color.White else Color.Black
-                        )
-                    )
-                }
+                        }
+                    }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth(),
+                        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                        color = queueTrayBackgroundColor,
+                        shadowElevation = 8.dp
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp)
+                                .padding(top = 20.dp, bottom = 24.dp)
+                                .navigationBarsPadding(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            androidx.compose.material3.ButtonGroup(
+                                modifier = Modifier.fillMaxWidth(),
+                                expandedRatio = 0.3f,
+                                overflowIndicator = {}
+                            ) {
+                                val scope = this
 
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(
-                            if (isDark) Color.White.copy(alpha = 0.08f)
-                            else Color.Black.copy(alpha = 0.06f)
-                        )
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                LazyColumn(
-                    state = lazyListState,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 120.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val currentSongId = songList.getOrNull(currentSongIndex)?.id
-                    itemsIndexed(
-                        items = filteredSongList,
-                        key = { _, song -> song.id },
-                        contentType = { _, _ -> "queue-song" }
-                    ) { index, song ->
-                        val isPlaying = (song.id == currentSongId)
-                        val originalIndex = songList.indexOfFirst { it.id == song.id }
-
-                        if (searchQuery.isNotEmpty()) {
-                            RebuiltQueueListItem(
-                                song = song,
-                                isPlaying = isPlaying,
-                                isDark = isDark,
-                                dynamicAccentColor = dynamicAccentColor,
-                                onClick = {
-                                    if (originalIndex != -1) {
-                                        onPlaySongAtIndex(originalIndex)
-                                    }
-                                },
-                                onRemoveClick = {
-                                    if (originalIndex != -1) {
-                                        onRemoveSongAtIndex(originalIndex)
-                                    }
-                                },
-                                dragHandle = {}
-                            )
-                        } else {
-                            ReorderableItem(
-                                state = reorderableState,
-                                key = song.id
-                            ) { isDragging ->
-                                val scale by animateFloatAsState(
-                                    targetValue = if (isDragging) 1.03f else 1f,
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioNoBouncy,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    ),
-                                    label = "scaleAnimation"
-                                )
-
-                                RebuiltQueueListItem(
-                                    song = song,
-                                    isPlaying = isPlaying,
-                                    isDark = isDark,
-                                    dynamicAccentColor = dynamicAccentColor,
-                                    onClick = {
-                                        if (originalIndex != -1) {
-                                            onPlaySongAtIndex(originalIndex)
-                                        }
-                                    },
-                                    onRemoveClick = {
-                                        if (originalIndex != -1) {
-                                            onRemoveSongAtIndex(originalIndex)
-                                        }
-                                    },
-                                    dragHandle = {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(44.dp)
-                                                .draggableHandle(
-                                                    onDragStarted = {
-                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                    },
-                                                    onDragStopped = {
-                                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                    }
-                                                ),
-                                            contentAlignment = Alignment.Center
+                                customItem(
+                                    buttonGroupContent = {
+                                        val interactionSource =
+                                            remember { MutableInteractionSource() }
+                                        val isPressed by interactionSource.collectIsPressedAsState()
+                                        val cornerRadius by animateDpAsState(
+                                            targetValue = if (isPressed) 12.dp else 28.dp,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                stiffness = Spring.StiffnessMedium
+                                            ),
+                                            label = "ShuffleCorner"
+                                        )
+                                        androidx.compose.material3.Button(
+                                            onClick = {
+                                                onToggleShuffle()
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            },
+                                            modifier = with(scope) {
+                                                Modifier
+                                                    .animateWidth(interactionSource)
+                                                    .weight(1f)
+                                                    .height(56.dp)
+                                            },
+                                            interactionSource = interactionSource,
+                                            shape = RoundedCornerShape(cornerRadius),
+                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                                containerColor = if (isShuffleEnabled) queueTrayActiveButtonColor else queueTrayInactiveButtonColor,
+                                                contentColor = if (isShuffleEnabled) queueTrayActiveContentColor else queueTrayInactiveContentColor
+                                            ),
+                                            contentPadding = PaddingValues(0.dp)
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Rounded.Menu,
-                                                contentDescription = "Drag to reorder",
-                                                tint = (if (isDark) Color.White else Color.Black).copy(alpha = 0.35f),
+                                                painter = painterResource(id = R.drawable.ic_shuffle),
+                                                contentDescription = "Shuffle",
                                                 modifier = Modifier.size(24.dp)
                                             )
                                         }
                                     },
-                                    modifier = Modifier
-                                        .graphicsLayer {
-                                            scaleX = scale
-                                            scaleY = scale
-                                            compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+                                    menuContent = {}
+                                )
+
+                                customItem(
+                                    buttonGroupContent = {
+                                        val interactionSource =
+                                            remember { MutableInteractionSource() }
+                                        val isPressed by interactionSource.collectIsPressedAsState()
+                                        val cornerRadius by animateDpAsState(
+                                            targetValue = if (isPressed) 12.dp else 28.dp,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                stiffness = Spring.StiffnessMedium
+                                            ),
+                                            label = "LoopCorner"
+                                        )
+                                        val loopIcon =
+                                            if (repeatMode == PlayerSharedViewModel.REPEAT_ONE) R.drawable.ic_repeat_one else R.drawable.ic_repeat
+                                        val loopActive =
+                                            repeatMode != PlayerSharedViewModel.REPEAT_OFF
+                                        androidx.compose.material3.Button(
+                                            onClick = {
+                                                onToggleLoopMode()
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            },
+                                            modifier = with(scope) {
+                                                Modifier
+                                                    .animateWidth(interactionSource)
+                                                    .weight(1f)
+                                                    .height(56.dp)
+                                            },
+                                            interactionSource = interactionSource,
+                                            shape = RoundedCornerShape(cornerRadius),
+                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                                containerColor = if (loopActive) queueTrayActiveButtonColor else queueTrayInactiveButtonColor,
+                                                contentColor = if (loopActive) queueTrayActiveContentColor else queueTrayInactiveContentColor
+                                            ),
+                                            contentPadding = PaddingValues(0.dp)
+                                        ) {
+                                            Icon(
+                                                painter = painterResource(id = loopIcon),
+                                                contentDescription = "Repeat Mode",
+                                                modifier = Modifier.size(24.dp)
+                                            )
                                         }
+                                    },
+                                    menuContent = {}
+                                )
+
+                                customItem(
+                                    buttonGroupContent = {
+                                        val interactionSource =
+                                            remember { MutableInteractionSource() }
+                                        val isPressed by interactionSource.collectIsPressedAsState()
+                                        val cornerRadius by animateDpAsState(
+                                            targetValue = if (isPressed) 12.dp else 28.dp,
+                                            animationSpec = spring(
+                                                dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                stiffness = Spring.StiffnessMedium
+                                            ),
+                                            label = "TimerCorner"
+                                        )
+                                        val timerActive =
+                                            sleepTimerMode != PlayerSharedViewModel.SleepTimerMode.OFF
+                                        androidx.compose.material3.Button(
+                                            onClick = {
+                                                onShowSleepTimerDialog()
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                            },
+                                            modifier = with(scope) {
+                                                Modifier
+                                                    .animateWidth(interactionSource)
+                                                    .weight(1f)
+                                                    .height(56.dp)
+                                            },
+                                            interactionSource = interactionSource,
+                                            shape = RoundedCornerShape(cornerRadius),
+                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                                containerColor = if (timerActive) queueTrayActiveButtonColor else queueTrayInactiveButtonColor,
+                                                contentColor = if (timerActive) queueTrayActiveContentColor else queueTrayInactiveContentColor
+                                            ),
+                                            contentPadding = PaddingValues(0.dp)
+                                        ) {
+                                            Icon(
+                                                painter = painterResource(id = R.drawable.ic_timer),
+                                                contentDescription = "Sleep Timer",
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                        }
+                                    },
+                                    menuContent = {}
                                 )
                             }
                         }
-                    }
-                }
-            }
-
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth(),
-                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-                color = queueTrayBackgroundColor,
-                shadowElevation = 8.dp
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp)
-                        .padding(top = 20.dp, bottom = 24.dp)
-                        .navigationBarsPadding(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    androidx.compose.material3.ButtonGroup(
-                        modifier = Modifier.fillMaxWidth(),
-                        expandedRatio = 0.3f,
-                        overflowIndicator = {}
-                    ) {
-                        val scope = this
-
-                        customItem(
-                            buttonGroupContent = {
-                                val interactionSource = remember { MutableInteractionSource() }
-                                val isPressed by interactionSource.collectIsPressedAsState()
-                                val cornerRadius by animateDpAsState(
-                                    targetValue = if (isPressed) 12.dp else 28.dp,
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    ),
-                                    label = "ShuffleCorner"
-                                )
-                                androidx.compose.material3.Button(
-                                    onClick = {
-                                        onToggleShuffle()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    },
-                                    modifier = with(scope) {
-                                        Modifier
-                                            .animateWidth(interactionSource)
-                                            .weight(1f)
-                                            .height(56.dp)
-                                    },
-                                    interactionSource = interactionSource,
-                                    shape = RoundedCornerShape(cornerRadius),
-                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                        containerColor = if (isShuffleEnabled) queueTrayActiveButtonColor else queueTrayInactiveButtonColor,
-                                        contentColor = if (isShuffleEnabled) queueTrayActiveContentColor else queueTrayInactiveContentColor
-                                    ),
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_shuffle),
-                                        contentDescription = "Shuffle",
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                            },
-                            menuContent = {}
-                        )
-
-                        customItem(
-                            buttonGroupContent = {
-                                val interactionSource = remember { MutableInteractionSource() }
-                                val isPressed by interactionSource.collectIsPressedAsState()
-                                val cornerRadius by animateDpAsState(
-                                    targetValue = if (isPressed) 12.dp else 28.dp,
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    ),
-                                    label = "LoopCorner"
-                                )
-                                val loopIcon = if (repeatMode == PlayerSharedViewModel.REPEAT_ONE) R.drawable.ic_repeat_one else R.drawable.ic_repeat
-                                val loopActive = repeatMode != PlayerSharedViewModel.REPEAT_OFF
-                                androidx.compose.material3.Button(
-                                    onClick = {
-                                        onToggleLoopMode()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    },
-                                    modifier = with(scope) {
-                                        Modifier
-                                            .animateWidth(interactionSource)
-                                            .weight(1f)
-                                            .height(56.dp)
-                                    },
-                                    interactionSource = interactionSource,
-                                    shape = RoundedCornerShape(cornerRadius),
-                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                        containerColor = if (loopActive) queueTrayActiveButtonColor else queueTrayInactiveButtonColor,
-                                        contentColor = if (loopActive) queueTrayActiveContentColor else queueTrayInactiveContentColor
-                                    ),
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = loopIcon),
-                                        contentDescription = "Repeat Mode",
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                            },
-                            menuContent = {}
-                        )
-
-                        customItem(
-                            buttonGroupContent = {
-                                val interactionSource = remember { MutableInteractionSource() }
-                                val isPressed by interactionSource.collectIsPressedAsState()
-                                val cornerRadius by animateDpAsState(
-                                    targetValue = if (isPressed) 12.dp else 28.dp,
-                                    animationSpec = spring(
-                                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                                        stiffness = Spring.StiffnessMedium
-                                    ),
-                                    label = "TimerCorner"
-                                )
-                                val timerActive = sleepTimerMode != PlayerSharedViewModel.SleepTimerMode.OFF
-                                androidx.compose.material3.Button(
-                                    onClick = {
-                                        onShowSleepTimerDialog()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    },
-                                    modifier = with(scope) {
-                                        Modifier
-                                            .animateWidth(interactionSource)
-                                            .weight(1f)
-                                            .height(56.dp)
-                                    },
-                                    interactionSource = interactionSource,
-                                    shape = RoundedCornerShape(cornerRadius),
-                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                        containerColor = if (timerActive) queueTrayActiveButtonColor else queueTrayInactiveButtonColor,
-                                        contentColor = if (timerActive) queueTrayActiveContentColor else queueTrayInactiveContentColor
-                                    ),
-                                    contentPadding = PaddingValues(0.dp)
-                                ) {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_timer),
-                                        contentDescription = "Sleep Timer",
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                            },
-                            menuContent = {}
-                        )
                     }
                 }
             }
         }
     }
+}
+
+private fun formatQueueDurationMs(durationMs: Long): String {
+    if (durationMs <= 0) return ""
+    val totalSeconds = durationMs / 1000
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return String.format(Locale.getDefault(), "%d:%02d", minutes, seconds)
+}
+
+private fun formatQueueSummaryText(songList: List<SongItem>, currentSongIndex: Int): String {
+    val totalSongs = songList.size
+    if (totalSongs == 0) return "0 songs"
+
+    val remainingSongs = if (currentSongIndex in songList.indices) {
+        songList.subList(currentSongIndex, songList.size)
+    } else {
+        songList
+    }
+
+    val totalDurationMs = remainingSongs.sumOf { it.duration }
+    if (totalDurationMs <= 0) {
+        return "$totalSongs songs"
+    }
+
+    val totalMinutes = totalDurationMs / 60000
+    val hours = totalMinutes / 60
+    val minutes = totalMinutes % 60
+
+    val durationText = when {
+        hours > 0 -> "${hours} hr ${minutes} min remaining"
+        minutes > 0 -> "${minutes} min remaining"
+        else -> "less than 1 min remaining"
+    }
+
+    return "$totalSongs songs • $durationText"
 }
 
 @Composable
@@ -948,55 +1382,37 @@ private fun RebuiltQueueListItem(
     dragHandle: @Composable () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val albumArtModel = remember(song.id) { song.getAlbumArtUri() ?: R.drawable.default_album_art }
     val itemBgColor = if (isPlaying) {
         dynamicAccentColor.copy(alpha = 0.12f)
     } else {
-        (if (isDark) Color.White else Color.Black).copy(alpha = 0.02f)
-    }
-    
-    val borderStroke = if (isPlaying) {
-        BorderStroke(1.dp, dynamicAccentColor.copy(alpha = 0.25f))
-    } else {
-        BorderStroke(1.dp, (if (isDark) Color.White else Color.Black).copy(alpha = 0.03f))
+        Color.Transparent
     }
 
     Surface(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp)),
+            .clip(RoundedCornerShape(12.dp)),
         color = itemBgColor,
-        border = borderStroke,
-        shape = RoundedCornerShape(16.dp)
+        shape = RoundedCornerShape(12.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 6.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Far Left Glowing Indicator Line for the currently playing item
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .height(28.dp)
-                    .clip(CircleShape)
-                    .background(if (isPlaying) dynamicAccentColor else Color.Transparent)
-            )
-
-            Spacer(modifier = Modifier.width(8.dp))
-
             // Thumbnail container
             Box(
                 modifier = Modifier
-                    .size(52.dp)
-                    .clip(RoundedCornerShape(10.dp)),
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(8.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                AsyncImage(
-                    model = albumArtModel,
+                com.codetrio.spatialflow.ui.explore.SpatialImage(
+                    model = song,
                     contentDescription = null,
+                    size = com.codetrio.spatialflow.ui.explore.ImageSemanticSize.ThumbnailSmall,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -1047,19 +1463,31 @@ private fun RebuiltQueueListItem(
                             Box(
                                 modifier = Modifier
                                     .width(3.5.dp)
-                                    .fillMaxHeight(line1Scale)
+                                    .height(16.dp)
+                                    .graphicsLayer {
+                                        scaleY = line1Scale
+                                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+                                    }
                                     .background(dynamicAccentColor, RoundedCornerShape(2.dp))
                             )
                             Box(
                                 modifier = Modifier
                                     .width(3.5.dp)
-                                    .fillMaxHeight(line2Scale)
+                                    .height(16.dp)
+                                    .graphicsLayer {
+                                        scaleY = line2Scale
+                                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+                                    }
                                     .background(dynamicAccentColor, RoundedCornerShape(2.dp))
                             )
                             Box(
                                 modifier = Modifier
                                     .width(3.5.dp)
-                                    .fillMaxHeight(line3Scale)
+                                    .height(16.dp)
+                                    .graphicsLayer {
+                                        scaleY = line3Scale
+                                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+                                    }
                                     .background(dynamicAccentColor, RoundedCornerShape(2.dp))
                             )
                         }
@@ -1067,7 +1495,7 @@ private fun RebuiltQueueListItem(
                 }
             }
 
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(12.dp))
 
             Column(
                 modifier = Modifier
@@ -1076,20 +1504,45 @@ private fun RebuiltQueueListItem(
             ) {
                 Text(
                     text = song.title,
-                    fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.SemiBold,
+                    fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Medium,
                     fontSize = 15.sp,
                     color = if (isPlaying) dynamicAccentColor else (if (isDark) Color.White else Color.Black),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = song.artist,
-                    fontSize = 13.sp,
-                    color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.6f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (song.isExplicit == true) {
+                        Surface(
+                            shape = RoundedCornerShape(2.dp),
+                            color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.12f),
+                            modifier = Modifier.padding(end = 4.dp)
+                        ) {
+                            Text(
+                                text = "E",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.7f),
+                                modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+
+                    val formattedDuration = remember(song.duration) { formatQueueDurationMs(song.duration) }
+                    val subtitleText = remember(song.artist, formattedDuration) {
+                        if (formattedDuration.isNotEmpty()) "${song.artist} • $formattedDuration" else song.artist
+                    }
+
+                    Text(
+                        text = subtitleText,
+                        fontSize = 13.sp,
+                        color = (if (isDark) Color.White else Color.Black).copy(alpha = 0.55f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             Row(
@@ -1099,13 +1552,13 @@ private fun RebuiltQueueListItem(
                 if (onRemoveClick != null) {
                     IconButton(
                         onClick = onRemoveClick,
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.size(36.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.Clear,
                             contentDescription = "Remove from Queue",
-                            tint = (if (isDark) Color.White else Color.Black).copy(alpha = 0.45f),
-                            modifier = Modifier.size(20.dp)
+                            tint = (if (isDark) Color.White else Color.Black).copy(alpha = 0.4f),
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }

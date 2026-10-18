@@ -13,7 +13,7 @@ class PaxsenixNeteaseProvider(private val context: Context) : LyricsProvider {
     }
 
     override fun getName(): String = "Paxsenix: Netease"
-    override fun getPriority(): Int = 2
+    override fun getPriority(): Int = 13
 
     override fun search(track: TrackMetadata): LyricsResult? {
         return try {

@@ -38,10 +38,13 @@ class PlayerHapticManager(context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-    // 3. Thread Safety: Using @Volatile for shared preferences variables read in hot loops
     @Volatile var isHapticsEnabled: Boolean = false
         private set
     @Volatile private var vibrationStrengthMultiplier: Float = 0.8f // Boosted default from 0.5f
+    @Volatile var audioMode: String = "full" // "full", "beats", "subbass"
+        private set
+    @Volatile var punchBoost: Boolean = true
+        private set
     
     // Required external multipliers
     @Volatile var bassBoostMultiplier: Float = 1.0f
@@ -75,8 +78,8 @@ class PlayerHapticManager(context: Context) {
 
     // Energy tracking
     private var lastMidEnergy = 0f
-    private var peakBassLevel = 0.5f
-    private var peakMidLevel = 0.3f
+    private var peakBassLevel = 0.20f
+    private var peakMidLevel = 0.15f
 
     // Timing & beat detection
     private var lastKickTime: Long = 0
@@ -92,7 +95,7 @@ class PlayerHapticManager(context: Context) {
     private var targetBassIntensity = 0f
 
     // Auto-Intensity (Dynamic Gain)
-    private var globalEnergyAvg = 0.15f // Moving average of total energy
+    private var globalEnergyAvg = 0.08f // Moving average of total energy
 
     // Motor State Machine
     private var currentMotorState = MotorState.IDLE
@@ -132,6 +135,12 @@ class PlayerHapticManager(context: Context) {
             vibrationStrengthMultiplier = strength / 100f
             updateCachedEffects()
             Log.d(TAG, "Strength updated: $vibrationStrengthMultiplier")
+        } else if (key == KEY_HAPTIC_AUDIO_MODE) {
+            audioMode = sharedPreferences.getString(KEY_HAPTIC_AUDIO_MODE, "full") ?: "full"
+            Log.d(TAG, "Audio mode updated: $audioMode")
+        } else if (key == KEY_HAPTIC_PUNCH_BOOST) {
+            punchBoost = sharedPreferences.getBoolean(KEY_HAPTIC_PUNCH_BOOST, true)
+            Log.d(TAG, "Punch boost updated: $punchBoost")
         }
     }
 
@@ -171,10 +180,10 @@ class PlayerHapticManager(context: Context) {
         if (multiplier <= 0f) return
 
         try {
-            // Kick
+            // Kick: Deep heavy punchy waveform with 100% motor capacity
             val kickBaseAmp = 255 // FULL MAXXX
             val kickPeak = normalizer.normalize(kickBaseAmp, deviceProfile, multiplier)
-            var kickTimings = longArrayOf(0, 40, 100, 50)
+            var kickTimings = longArrayOf(0, 35, 85, 45)
             kickTimings = normalizer.getAdaptedEnvelope(kickTimings, deviceProfile)
             val kickAmps = intArrayOf(0, (kickPeak * 0.9f).toInt(), kickPeak, 0)
             cachedKickEffect = if (deviceProfile.supportsWaveform) {
@@ -183,16 +192,16 @@ class PlayerHapticManager(context: Context) {
                 VibrationEffect.createOneShot(kickTimings[1] + kickTimings[2], kickPeak)
             }
 
-            // Snare
+            // Snare: crisp solid tactile impact
             val snareBaseAmp = 255 // FULL MAXXX
             val snareAmp = normalizer.normalize(snareBaseAmp, deviceProfile, multiplier)
-            val snareDur = if (deviceProfile.isLikelyERM) 60L else 45L
+            val snareDur = if (deviceProfile.isLikelyERM) 55L else 40L
             cachedSnareEffect = VibrationEffect.createOneShot(snareDur, snareAmp)
 
-            // HiHat
+            // HiHat: subtle crisp tick
             val hihatBaseAmp = 255 // FULL MAXXX
             val hihatAmp = normalizer.normalize(hihatBaseAmp, deviceProfile, multiplier)
-            val hihatDur = if (deviceProfile.isLikelyERM) 40L else 30L
+            val hihatDur = if (deviceProfile.isLikelyERM) 35L else 25L
             cachedHiHatEffect = VibrationEffect.createOneShot(hihatDur, hihatAmp)
             
         } catch (e: Exception) {
@@ -206,8 +215,10 @@ class PlayerHapticManager(context: Context) {
         }
         isHapticsEnabled = prefs?.getBoolean(KEY_HAPTICS_ENABLED, false) ?: false
         vibrationStrengthMultiplier = (prefs?.getFloat(KEY_VIBRATION_STRENGTH, 80f) ?: 80f) / 100f
+        audioMode = prefs?.getString(KEY_HAPTIC_AUDIO_MODE, "full") ?: "full"
+        punchBoost = prefs?.getBoolean(KEY_HAPTIC_PUNCH_BOOST, true) ?: true
         updateCachedEffects()
-        Log.d(TAG, "Settings loaded - Enabled: $isHapticsEnabled, Strength: $vibrationStrengthMultiplier")
+        Log.d(TAG, "Settings loaded - Enabled: $isHapticsEnabled, Strength: $vibrationStrengthMultiplier, Mode: $audioMode, Punch: $punchBoost")
     }
 
     private fun detectDeviceCapabilities() {
@@ -280,13 +291,13 @@ class PlayerHapticManager(context: Context) {
 
         scope.launch {
             val frameEnergy = (subBass + bass + mid + high) / 4f
-            if (frameEnergy > 0.01f) {
+            if (frameEnergy > 0.005f) {
                 globalEnergyAvg = globalEnergyAvg * (1 - GAIN_ADJUST_SPEED) + frameEnergy * GAIN_ADJUST_SPEED
             }
 
-            val safeAvg = max(0.08f, globalEnergyAvg)
-            var dynamicGain = 0.40f / safeAvg
-            dynamicGain = max(1.5f, min(6.0f, dynamicGain))
+            val safeAvg = max(0.04f, globalEnergyAvg)
+            var dynamicGain = 0.45f / safeAvg
+            dynamicGain = max(1.5f, min(7.5f, dynamicGain))
 
             val curSubBass = subBass * bassBoostMultiplier * eqBassMultiplier * loudnessMultiplier * dynamicGain
             val curBass = bass * (bassBoostMultiplier * 0.8f) * dynamicGain
@@ -308,23 +319,27 @@ class PlayerHapticManager(context: Context) {
             val adjustedKickInterval = (MIN_KICK_INTERVAL / playbackSpeedFactor).toLong()
             val adjustedSnareInterval = (MIN_SNARE_INTERVAL / playbackSpeedFactor).toLong()
 
-            val dynamicPeak = max(peakBassLevel, 0.1f)
-            val combinedHapticSignal = if (curSubBass > dynamicPeak * 0.4f) {
-                curSubBass + (high * 0.15f)
+            val dynamicPeak = max(peakBassLevel, 0.08f)
+            val combinedHapticSignal = if (curSubBass > dynamicPeak * 0.35f) {
+                curSubBass + (high * 0.12f)
             } else {
-                curSubBass + (vocalEnergy * 0.45f) + (high * 0.10f)
+                curSubBass + (vocalEnergy * 0.40f) + (high * 0.08f)
             }
 
             var normalizedSignal = min(1f, combinedHapticSignal / dynamicPeak)
 
-            if (normalizedSignal < 0.55f) {
+            // Clean dynamic floor: cuts off quiet background noise but preserves musical bass
+            val dynamicFloor = 0.04f
+            if (normalizedSignal < dynamicFloor) {
                 normalizedSignal = 0f
                 if (currentMotorState == MotorState.CONTINUOUS) {
                     targetBassIntensity = 0f
                 }
+            } else {
+                normalizedSignal = ((normalizedSignal - dynamicFloor) / (1f - dynamicFloor)).coerceIn(0f, 1f)
             }
 
-            targetBassIntensity = normalizedSignal.pow(3.0f).coerceIn(0f, 1f)
+            targetBassIntensity = normalizedSignal.pow(2.2f).coerceIn(0f, 1f)
 
             if (targetBassIntensity > currentBassIntensity) {
                 currentBassIntensity = currentBassIntensity * (1 - ENVELOPE_ATTACK) + targetBassIntensity * ENVELOPE_ATTACK
@@ -335,34 +350,37 @@ class PlayerHapticManager(context: Context) {
                 currentBassIntensity = currentBassIntensity * (1 - ENVELOPE_DECAY) + targetBassIntensity * ENVELOPE_DECAY
             }
 
-            if (binderController.canUpdate(deviceProfile, now)) {
-                updateContinuousBassHaptic(currentBassIntensity)
+            if (audioMode != "beats") {
+                if (binderController.canUpdate(deviceProfile, now)) {
+                    updateContinuousBassHaptic(currentBassIntensity)
+                }
             }
 
-            // Transients
-            val subBassRise = curSubBass - avgSubBass
-            val isKick = curSubBass > avgSubBass * 1.15f && 
-                    subBassRise > 0.015f &&
-                    (now - lastKickTime) > adjustedKickInterval
+            // Transients (Kick & Snare detection with dynamic crest sensitivity for FLAC & Lossless)
+            if (audioMode != "subbass") {
+                val subBassRise = curSubBass - avgSubBass
+                val isKick = ((curSubBass > avgSubBass * 1.10f && subBassRise > 0.005f) || (curSubBass > dynamicPeak * 0.65f)) &&
+                        (now - lastKickTime) > adjustedKickInterval
 
-            if (isKick) {
-                updateBPM(now)
-                lastKickTime = now
-                val kickIntensity = computeIntensity(curSubBass, avgSubBass, peakBassLevel)
-                triggerTransientHaptic(max(0.9f, kickIntensity * 1.5f), HapticType.KICK)
-            }
+                if (isKick) {
+                    updateBPM(now)
+                    lastKickTime = now
+                    val kickIntensity = computeIntensity(curSubBass, avgSubBass, peakBassLevel)
+                    val kickPower = if (punchBoost) 1.0f else max(0.9f, kickIntensity * 1.5f)
+                    triggerTransientHaptic(kickPower, HapticType.KICK)
+                }
 
-            val midRise = curMid - lastMidEnergy
-            val isSnare = curMid > avgMid * 1.3f && 
-                    midRise > (avgMid * 0.2f) &&
-                    midRise > 0.03f &&
-                    curSubBass < avgSubBass * 1.6f &&
-                    (now - lastSnareTime) > adjustedSnareInterval
+                val midRise = curMid - lastMidEnergy
+                val isSnare = curMid > avgMid * 1.15f && 
+                        midRise > 0.010f &&
+                        curSubBass < avgSubBass * 1.8f &&
+                        (now - lastSnareTime) > adjustedSnareInterval
 
-            if (isSnare) {
-                lastSnareTime = now
-                val snareIntensity = computeIntensity(curMid, avgMid, peakMidLevel)
-                triggerTransientHaptic(min(1.0f, snareIntensity * 2.0f), HapticType.SNARE)
+                if (isSnare) {
+                    lastSnareTime = now
+                    val snareIntensity = computeIntensity(curMid, avgMid, peakMidLevel)
+                    triggerTransientHaptic(min(1.0f, snareIntensity * 2.0f), HapticType.SNARE)
+                }
             }
 
             lastMidEnergy = curMid
@@ -512,15 +530,13 @@ class PlayerHapticManager(context: Context) {
 
         if (isOreoOrLater && hasAmplitudeControl) {
             try {
-                // Determine effect to use
                 val effect = when (type) {
                     HapticType.KICK -> cachedKickEffect ?: run {
-                        // Fallback calc if cache missed
-                        val targetBaseAmp = min(255f, 180f + (75f * intensity)).toInt()
+                        val targetBaseAmp = min(255f, 200f + (55f * intensity)).toInt()
                         val peakAmp = normalizer.normalize(targetBaseAmp, deviceProfile, multiplier)
-                        var timings = longArrayOf(0, 25, 60, 30)
+                        var timings = longArrayOf(0, 30, 75, 40)
                         timings = normalizer.getAdaptedEnvelope(timings, deviceProfile)
-                        val amps = intArrayOf(0, (peakAmp * 0.6f).toInt(), peakAmp, 0)
+                        val amps = intArrayOf(0, (peakAmp * 0.9f).toInt(), peakAmp, 0)
                         if (deviceProfile.supportsWaveform) {
                             VibrationEffect.createWaveform(timings, amps, -1)
                         } else {
@@ -528,9 +544,9 @@ class PlayerHapticManager(context: Context) {
                         }
                     }
                     HapticType.SNARE -> cachedSnareEffect ?: run {
-                        val targetBaseAmp = min(200f, 140f + (60f * intensity)).toInt()
+                        val targetBaseAmp = min(255f, 180f + (75f * intensity)).toInt()
                         val targetAmp = normalizer.normalize(targetBaseAmp, deviceProfile, multiplier)
-                        val duration = if (deviceProfile.isLikelyERM) 40L else 25L
+                        val duration = if (deviceProfile.isLikelyERM) 50L else 35L
                         VibrationEffect.createOneShot(duration, targetAmp)
                     }
                 }
@@ -564,7 +580,7 @@ class PlayerHapticManager(context: Context) {
         var isLikelyERM = false
     }
 
-    private class DeviceHapticProfiler {
+    class DeviceHapticProfiler {
         fun buildProfile(): DeviceHapticProfile {
             val p = DeviceHapticProfile()
             val mfg = Build.MANUFACTURER.lowercase()
@@ -632,7 +648,7 @@ class PlayerHapticManager(context: Context) {
         }
     }
 
-    private class AdaptiveAmplitudeNormalizer {
+    class AdaptiveAmplitudeNormalizer {
         fun normalize(baseAmp: Int, p: DeviceHapticProfile, mult: Float): Int {
             var amp = (baseAmp * mult).toInt()
             amp = max(p.minEffectiveAmplitude, min(p.maxStableAmplitude, amp))
@@ -686,8 +702,11 @@ class PlayerHapticManager(context: Context) {
     companion object {
         private const val TAG = "PlayerHapticManager"
         private const val PREFS_NAME = "AppSettings"
-        private const val KEY_HAPTICS_ENABLED = "haptics_enabled"
-        private const val KEY_VIBRATION_STRENGTH = "vibration_strength"
+        const val KEY_HAPTICS_ENABLED = "haptics_enabled"
+        const val KEY_VIBRATION_STRENGTH = "vibration_strength"
+        const val KEY_HAPTIC_AUDIO_MODE = "haptic_audio_mode"
+        const val KEY_HAPTIC_PUNCH_BOOST = "haptic_punch_boost"
+        const val KEY_HAPTIC_SLIDER_TICKS = "haptic_slider_ticks"
 
         private const val MIN_KICK_INTERVAL = 200L
         private const val MIN_SNARE_INTERVAL = 150L
@@ -696,7 +715,107 @@ class PlayerHapticManager(context: Context) {
         private const val ENVELOPE_DECAY = 0.15f
         private const val CONTINUOUS_MAX_AMP = 130
         private const val DELTA_AMP_THRESHOLD = 15
-        private const val TRANSIENT_LOCKOUT_MS = 120L
+        private const val TRANSIENT_LOCKOUT_MS = 45L // Reduced from 120L: Prevents killing 808s and continuous bass on kicks!
+
+        fun getSystemVibrator(context: Context): Vibrator? {
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val manager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                manager?.defaultVibrator
+            } else {
+                context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+        }
+
+        fun getDeviceCapabilities(context: Context): DeviceHapticCapabilities {
+            val vibrator = getSystemVibrator(context)
+            val hasVib = vibrator?.hasVibrator() == true
+            val hasAmp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.hasAmplitudeControl() == true
+            } else false
+            val supportsWaveform = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+
+            val profiler = DeviceHapticProfiler()
+            val profile = profiler.buildProfile()
+            val isLra = !profile.isLikelyERM
+
+            val primitivesList = mutableListOf<String>()
+            var supportsPrimitives = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && vibrator != null) {
+                try {
+                    if (vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_CLICK)) {
+                        primitivesList.add("Click")
+                    }
+                    if (vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_TICK)) {
+                        primitivesList.add("Tick")
+                    }
+                    if (vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_LOW_TICK)) {
+                        primitivesList.add("Low Tick")
+                    }
+                    if (vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_THUD)) {
+                        primitivesList.add("Thud")
+                    }
+                    if (vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_SPIN)) {
+                        primitivesList.add("Spin")
+                    }
+                    if (vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_QUICK_RISE)) {
+                        primitivesList.add("Quick Rise")
+                    }
+                    supportsPrimitives = primitivesList.isNotEmpty()
+                } catch (_: Exception) {}
+            }
+
+            val actuatorName = when {
+                !hasVib -> "No Vibrator Detected"
+                isLra -> "Linear Resonant Actuator (LRA)"
+                else -> "Eccentric Rotating Mass (ERM)"
+            }
+
+            return DeviceHapticCapabilities(
+                hasVibrator = hasVib,
+                isLraActuator = isLra,
+                actuatorName = actuatorName,
+                hasAmplitudeControl = hasAmp,
+                supportsWaveforms = supportsWaveform,
+                supportsCompositionPrimitives = supportsPrimitives,
+                supportedPrimitivesList = primitivesList
+            )
+        }
+
+        fun triggerTestKick(context: Context) {
+            val vibrator = getSystemVibrator(context) ?: return
+            if (!vibrator.hasVibrator()) return
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val strength = prefs.getFloat(KEY_VIBRATION_STRENGTH, 80f) / 100f
+            val mult = strength.coerceIn(0.1f, 1.0f)
+
+            val profiler = DeviceHapticProfiler()
+            val profile = profiler.buildProfile()
+            val normalizer = AdaptiveAmplitudeNormalizer()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()) {
+                try {
+                    val kickPeak = normalizer.normalize(255, profile, mult)
+                    var kickTimings = longArrayOf(0, 35, 85, 45)
+                    kickTimings = normalizer.getAdaptedEnvelope(kickTimings, profile)
+                    val kickAmps = intArrayOf(0, (kickPeak * 0.9f).toInt(), kickPeak, 0)
+                    val effect = VibrationEffect.createWaveform(kickTimings, kickAmps, -1)
+                    vibrator.vibrate(effect)
+                    return
+                } catch (_: Exception) {}
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val amp = (mult * 255).toInt().coerceIn(1, 255)
+                vibrator.vibrate(VibrationEffect.createOneShot(50L, amp))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(50L)
+            }
+        }
+
+        fun triggerHeartbeat(context: Context) {
+            triggerInteractionHaptic(context, "haptic_favorite")
+        }
 
         fun triggerInteractionHaptic(context: Context, preferenceKey: String) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -709,22 +828,122 @@ class PlayerHapticManager(context: Context) {
             val strength = prefs.getFloat(KEY_VIBRATION_STRENGTH, 80f)
             if (strength <= 0f) return
 
-            val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-            if (vibrator != null && vibrator.hasVibrator()) {
-                val amplitude = (strength / 100f * 255).toInt().coerceIn(1, 255)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    val duration = when (preferenceKey) {
-                        "haptic_play_pause" -> 35L
-                        "haptic_queue" -> 25L
-                        "haptic_favorite" -> 45L
-                        else -> 30L
+            val vibrator = getSystemVibrator(context) ?: return
+            if (!vibrator.hasVibrator()) return
+
+            val scale = (strength / 100f).coerceIn(0f, 1f)
+            val amplitude = (scale * 255).toInt().coerceIn(1, 255)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && vibrator.areAllPrimitivesSupported(
+                VibrationEffect.Composition.PRIMITIVE_CLICK,
+                VibrationEffect.Composition.PRIMITIVE_TICK,
+                VibrationEffect.Composition.PRIMITIVE_LOW_TICK
+            )) {
+                try {
+                    when (preferenceKey) {
+                        "haptic_play_pause" -> {
+                            // Apple Music mechanical latch click
+                            vibrator.vibrate(
+                                VibrationEffect.startComposition()
+                                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, scale)
+                                    .compose()
+                            )
+                        }
+                        "haptic_favorite" -> {
+                            // Apple Music heartbeat double pulse (subtle low tick + crisp confirmation click)
+                            vibrator.vibrate(
+                                VibrationEffect.startComposition()
+                                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_LOW_TICK, scale * 0.75f)
+                                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, scale, 75)
+                                    .compose()
+                            )
+                        }
+                        "haptic_queue" -> {
+                            // Apple Music mechanical detent
+                            vibrator.vibrate(
+                                VibrationEffect.startComposition()
+                                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, scale)
+                                    .compose()
+                            )
+                        }
+                        else -> {
+                            vibrator.vibrate(
+                                VibrationEffect.startComposition()
+                                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, scale * 0.8f)
+                                    .compose()
+                            )
+                        }
                     }
-                    vibrator.vibrate(VibrationEffect.createOneShot(duration, amplitude))
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator.vibrate(30)
+                    return
+                } catch (e: Exception) {
+                    Log.w(TAG, "Primitive composition failed: ${e.message}")
                 }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val effect = when (preferenceKey) {
+                    "haptic_play_pause" -> VibrationEffect.createOneShot(20L, amplitude)
+                    "haptic_favorite" -> {
+                        // Double pulse fallback: [0ms delay, 14ms on, 65ms off, 18ms on]
+                        val timings = longArrayOf(0, 14, 65, 18)
+                        val amps = intArrayOf(0, (amplitude * 0.65f).toInt(), 0, amplitude)
+                        VibrationEffect.createWaveform(timings, amps, -1)
+                    }
+                    "haptic_queue" -> VibrationEffect.createOneShot(12L, (amplitude * 0.75f).toInt().coerceAtLeast(1))
+                    else -> VibrationEffect.createOneShot(18L, amplitude)
+                }
+                vibrator.vibrate(effect)
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(20)
+            }
+        }
+
+        fun triggerSliderTick(context: Context) {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val hapticsEnabled = prefs.getBoolean(KEY_HAPTICS_ENABLED, false)
+            if (!hapticsEnabled) return
+
+            val sliderTicksEnabled = prefs.getBoolean(KEY_HAPTIC_SLIDER_TICKS, true)
+            if (!sliderTicksEnabled) return
+
+            val strength = prefs.getFloat(KEY_VIBRATION_STRENGTH, 80f)
+            if (strength <= 0f) return
+
+            val vibrator = getSystemVibrator(context) ?: return
+            if (!vibrator.hasVibrator()) return
+
+            val scale = (strength / 100f).coerceIn(0f, 1f)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                vibrator.areAllPrimitivesSupported(VibrationEffect.Composition.PRIMITIVE_LOW_TICK)) {
+                try {
+                    vibrator.vibrate(
+                        VibrationEffect.startComposition()
+                            .addPrimitive(VibrationEffect.Composition.PRIMITIVE_LOW_TICK, (scale * 0.5f).coerceIn(0.1f, 1.0f))
+                            .compose()
+                    )
+                    return
+                } catch (_: Exception) {}
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val amp = (scale * 80).toInt().coerceIn(1, 255)
+                vibrator.vibrate(VibrationEffect.createOneShot(8L, amp))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(10)
             }
         }
     }
 }
+
+data class DeviceHapticCapabilities(
+    val hasVibrator: Boolean,
+    val isLraActuator: Boolean,
+    val actuatorName: String,
+    val hasAmplitudeControl: Boolean,
+    val supportsWaveforms: Boolean,
+    val supportsCompositionPrimitives: Boolean,
+    val supportedPrimitivesList: List<String>
+)

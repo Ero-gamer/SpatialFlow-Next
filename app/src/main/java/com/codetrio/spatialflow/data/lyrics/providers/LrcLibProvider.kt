@@ -21,7 +21,7 @@ class LrcLibProvider(private val api: LrcLibApi) : LyricsProvider {
 
     override fun getName(): String = "LrcLib"
 
-    override fun getPriority(): Int = 1 // Highest priority — best synced lyrics source
+    override fun getPriority(): Int = 10 // Line-synced provider
 
     override fun search(track: TrackMetadata): LyricsResult? {
         // Pass 1: Direct GET with exact parameters

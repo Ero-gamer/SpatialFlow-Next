@@ -6,7 +6,7 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
-    id("com.github.ben-manes.versions") version "0.54.0"
+    id("io.github.ben-manes.versions") version "0.64.0"
 }
 
 // Read credentials from local.properties (secure, gitignored)
@@ -28,6 +28,7 @@ def isReleaseSigningReady = myKeystoreFile != null && myKeystorePassword != null
 android {
     namespace 'com.codetrio.spatialflow'
     compileSdk 37
+    ndkVersion "30.0.15729638"
 
     // Fix for "App not installed" errors when sharing debug APKs
     project.ext.set("android.injected.testOnly", "false")
@@ -35,10 +36,39 @@ android {
     defaultConfig {
         applicationId "com.codetrio.spatialflow"
         minSdk 25
-        targetSdk 37
-        versionCode 9
-        versionName "1.8.1"
+        targetSdk 36
+        versionCode 10
+        versionName "1.8.2"
+
+        def gatewayUrl = localProps.getProperty('COMMUNITY_GATEWAY_URL') ?: ""
+        def handshakeSalt = localProps.getProperty('APP_HANDSHAKE_SALT') ?: ""
+        def sourcePoolKey = localProps.getProperty('SOURCE_POOL_KEY') ?: ""
+        def shareApiUrl = localProps.getProperty('SHARE_API_URL') ?: ""
+        buildConfigField "String", "COMMUNITY_GATEWAY_URL", "\"${gatewayUrl}\""
+        buildConfigField "String", "APP_HANDSHAKE_SALT", "\"${handshakeSalt}\""
+        buildConfigField "String", "SOURCE_POOL_KEY", "\"${sourcePoolKey}\""
+        buildConfigField "String", "SHARE_API_URL", "\"${shareApiUrl}\""
+
+        externalNativeBuild {
+            cmake {
+                cppFlags "-std=c++17 -O3 -flto -fno-exceptions -fno-rtti"
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a", "x86_64"
+        }
     }
+
+    externalNativeBuild {
+        cmake {
+            path file("src/main/cpp/CMakeLists.txt")
+            version "3.22.1"
+        }
+    }
+
+
 
     dependenciesInfo {
         includeInApk = false
@@ -60,6 +90,10 @@ android {
         viewBinding true
         buildConfig true
         compose true
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
     }
 
     buildTypes {
@@ -92,6 +126,29 @@ android {
             reset()
             include "armeabi-v7a", "arm64-v8a", "x86", "x86_64"
             universalApk true
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+        resources {
+            excludes += [
+                "META-INF/LICENSE*",
+                "META-INF/license*",
+                "META-INF/NOTICE*",
+                "META-INF/notice*",
+                "META-INF/ASL2.0",
+                "META-INF/*.kotlin_module",
+                "META-INF/DEPENDENCIES",
+                "META-INF/INDEX.LIST",
+                "META-INF/INDEX.list",
+                "META-INF/CONTRIBUTORS*",
+                "META-INF/contributors*",
+                "META-INF/README*",
+                "META-INF/readme*"
+            ]
         }
     }
 }
@@ -152,6 +209,7 @@ dependencies {
 
 
     testImplementation libs.junit
+    testImplementation libs.kotlinx.coroutines.test
     androidTestImplementation libs.junit.v121
     androidTestImplementation libs.espresso.core.v361
 
@@ -159,6 +217,9 @@ dependencies {
     implementation libs.retrofit
     implementation libs.converter.gson
     implementation libs.logging.interceptor
+
+    // QR Code Generation
+    implementation libs.core
 
     // Source: https://mvnrepository.com/artifact/net.jthink/jaudiotagger
     implementation libs.jaudiotagger
@@ -176,6 +237,7 @@ dependencies {
 
     // NewPipe Extractor — local YouTube stream extraction (no proxy dependency)
     implementation libs.newpipeextractor
+    implementation libs.rhino
 
     // Hilt
     implementation libs.hilt.android
@@ -201,6 +263,26 @@ dependencies {
 
     // Media3 OkHttp DataSource (Canvas ExoPlayer)
     implementation libs.media3.datasource.okhttp
+
+    // Haze Realtime Blur Library
+    implementation libs.haze.core
+    implementation libs.haze.materials
+
+    // Kyant Backdrop Liquid Glass & Continuous Shapes Libraries
+    implementation libs.backdrop
+    implementation libs.shapes
+
+    // AndroidX WorkManager (Periodic Background Update Checks)
+    implementation libs.work.runtime.ktx
+
+    // AndroidX Security Crypto (Hardware-backed Keystore & EncryptedSharedPreferences)
+    implementation libs.security.crypto
+
+    // AndroidX WebKit (WebView security, origin allowlist, and secure user-agent handling)
+    implementation libs.androidx.webkit
+
+    // Kuromoji Japanese Morphological Analyzer for accurate Kanji -> Romaji
+    implementation libs.kuromoji.ipadic
 }
 
 def isNonStable = { String version ->

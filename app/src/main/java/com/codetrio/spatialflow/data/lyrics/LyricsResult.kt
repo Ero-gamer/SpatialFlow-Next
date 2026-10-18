@@ -36,10 +36,13 @@ data class LyricsResult(
         this.syncedLyrics = syncedLyrics
         this.isSynced = !syncedLyrics.isNullOrEmpty() && (
                 syncedLyrics.matches("(?s).*\\[\\d{2}:\\d{2}\\.\\d{2,3}].*".toRegex()) ||
+                syncedLyrics.matches("(?s).*\\[\\d+,\\d+].*".toRegex()) ||
                 syncedLyrics.contains("<tt") ||
                 syncedLyrics.contains("<?xml") ||
                 syncedLyrics.contains("<p begin=") ||
-                syncedLyrics.contains("ttm:begin")
+                syncedLyrics.contains("ttm:begin") ||
+                syncedLyrics.contains("<QrcInfos>") ||
+                syncedLyrics.contains("LyricContent=")
         )
         return this
     }

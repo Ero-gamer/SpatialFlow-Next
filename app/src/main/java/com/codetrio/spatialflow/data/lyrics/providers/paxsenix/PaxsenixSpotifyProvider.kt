@@ -13,7 +13,7 @@ class PaxsenixSpotifyProvider(private val context: Context) : LyricsProvider {
     }
 
     override fun getName(): String = "Paxsenix: Spotify"
-    override fun getPriority(): Int = 1
+    override fun getPriority(): Int = 12
 
     override fun search(track: TrackMetadata): LyricsResult? {
         return try {

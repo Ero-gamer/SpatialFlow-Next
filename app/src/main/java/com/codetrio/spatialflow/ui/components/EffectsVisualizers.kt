@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -48,153 +49,352 @@ import kotlin.math.sin
 
 @Composable
 fun ReverbRoomVisualizer(
-    presetIndex: Int, // 0 = None, 1–6 = rooms
+    presetIndex: Int, // 0 = None, 1 = Room, 2 = Hall, 3 = Stadium, 4 = Plate, 5 = Spring
     enabled: Boolean,
     speed: Float = 1.0f,
     modifier: Modifier = Modifier
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+    val tertiaryColor = MaterialTheme.colorScheme.tertiary
     val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
-    // Continuous rotation to make the cylinder spin smoothly like FL Studio
-    val infiniteTransition = rememberInfiniteTransition(label = "reverb_rotation")
-    val rotationPhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(
-                durationMillis = (6000f / speed).toInt().coerceIn(1500, 15000),
-                easing = LinearEasing
-            ),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "cylinder_spin"
-    )
-
-    // Animate glow alpha with a delay to let the AnimatedVisibility slide-down finish first, preventing clipping
-    val glowAlpha by animateFloatAsState(
-        targetValue = if (enabled && presetIndex > 0) 1f else 0f,
-        animationSpec = if (enabled && presetIndex > 0) {
-            tween(durationMillis = 400, delayMillis = 350)
+    var rotationPhase by remember { mutableStateOf(0f) }
+    LaunchedEffect(enabled, speed) {
+        if (enabled) {
+            val duration = (6000f / speed).toInt().coerceIn(1500, 15000)
+            val startTime = System.currentTimeMillis()
+            while (true) {
+                withFrameNanos {
+                    val elapsed = (System.currentTimeMillis() - startTime) % duration
+                    rotationPhase = (elapsed.toFloat() / duration.toFloat()) * (2f * PI.toFloat())
+                }
+            }
         } else {
-            tween(durationMillis = 150)
-        },
-        label = "reverb_glow_alpha"
+            rotationPhase = 0f
+        }
+    }
+
+    // Morphing spring weights for each preset
+    val roomWeight by animateFloatAsState(
+        targetValue = if (enabled && presetIndex == 1) 1f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "reverb_room_weight"
+    )
+    val hallWeight by animateFloatAsState(
+        targetValue = if (enabled && presetIndex == 2) 1f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "reverb_hall_weight"
+    )
+    val stadiumWeight by animateFloatAsState(
+        targetValue = if (enabled && presetIndex == 3) 1f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "reverb_stadium_weight"
+    )
+    val plateWeight by animateFloatAsState(
+        targetValue = if (enabled && presetIndex == 4) 1f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "reverb_plate_weight"
+    )
+    val springWeight by animateFloatAsState(
+        targetValue = if (enabled && presetIndex == 5) 1f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "reverb_spring_weight"
     )
 
-    // Layout scaling based on preset index (Higher preset = physically larger cylinder)
-    val targetScaleFraction = if (presetIndex <= 0 || !enabled) 0.4f else (0.5f + presetIndex * 0.08f).coerceAtMost(1f)
-    val roomScaleFraction by animateFloatAsState(
-        targetValue = targetScaleFraction,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "reverb_room_scale"
-    )
-
-    // Pre-cache dp conversions outside the Canvas DrawScope
     val density = LocalDensity.current
     val strokeWidth = with(density) { 1.5.dp.toPx() }
-    val ryBase = with(density) { 16.dp.toPx() }
 
     Canvas(
         modifier = modifier
             .fillMaxWidth()
-            .height(110.dp) // Height slightly increased to properly frame the 3D projection
+            .height(130.dp)
     ) {
         val w = size.width
         val h = size.height
         val cx = w / 2f
         val cy = h / 2f
 
-        val wireColor = if (enabled) primaryColor else onSurfaceVariant.copy(alpha = 0.38f)
-        val currentRotation = if (enabled) rotationPhase else 0f
+        val baseColor = if (enabled) primaryColor else onSurfaceVariant.copy(alpha = 0.38f)
+        val phase = if (enabled) rotationPhase else 0f
 
-        // 1. Calculate dynamic boundaries based on the preset scale
-        val cylinderWidth = w * 0.5f * roomScaleFraction
-        val cylinderHeight = h * 0.65f * roomScaleFraction
-        
-        // Horizontal and vertical radii for the top/bottom ellipse perspective flatlines
-        val rx = cylinderWidth / 2f
-        val ry = ryBase * roomScaleFraction // Ellipse flatness/tilt
-
-        val topCenterY = cy - (cylinderHeight / 2f)
-        val bottomCenterY = cy + (cylinderHeight / 2f)
-
-        // 2. Draw ambient background glow inside the cylinder zone
-        if (glowAlpha > 0f) {
-            val glowRadius = (h * 0.48f * roomScaleFraction).coerceAtLeast(1f)
+        // Ambient radial background glow
+        val totalActiveWeight = (roomWeight + hallWeight + stadiumWeight + plateWeight + springWeight).coerceIn(0f, 1f)
+        if (totalActiveWeight > 0f) {
             drawCircle(
                 brush = Brush.radialGradient(
-                    colors = listOf(primaryColor.copy(alpha = 0.12f * roomScaleFraction * glowAlpha), Color.Transparent),
+                    colors = listOf(primaryColor.copy(alpha = 0.15f * totalActiveWeight), Color.Transparent),
                     center = Offset(cx, cy),
-                    radius = glowRadius
+                    radius = h * 0.5f
                 ),
-                radius = glowRadius,
+                radius = h * 0.5f,
                 center = Offset(cx, cy)
             )
         }
 
-        // 3. Render the vertical structural lines (Pillars) with depth mapping
-        // More presets = more geometric line segments for structural complexity
-        val verticalPillarsCount = 12 + (presetIndex * 2) 
-        
-        for (i in 0 until verticalPillarsCount) {
-            // Distribute angles evenly around the 360-degree loop + add rotation animation
-            val angle = (i.toFloat() / verticalPillarsCount) * (2 * PI).toFloat() + currentRotation
-            
-            // Map 3D coordinates onto a 2D isometric viewport plane
-            val xOffset = rx * cos(angle)
-            val yOffset = ry * sin(angle)
+        // ─── 1. SMALL ROOM: Isometric 3D Studio Chamber with Corner Absorption Nodes ─────
+        if (roomWeight > 0.001f) {
+            val scale = (0.7f + 0.3f * roomWeight) * (h * 0.35f)
+            val boxAlpha = 0.85f * roomWeight
 
-            val px = cx + xOffset
-            val pTopY = topCenterY + yOffset
-            val pBottomY = bottomCenterY + yOffset
+            // Corner 3D perspective points
+            val corners = arrayOf(
+                Offset(cx - scale * 1.1f, cy - scale * 0.6f),
+                Offset(cx + scale * 1.1f, cy - scale * 0.6f),
+                Offset(cx + scale * 1.1f, cy + scale * 0.6f),
+                Offset(cx - scale * 1.1f, cy + scale * 0.6f),
+                // Inner 3D depth wall points
+                Offset(cx - scale * 0.6f, cy - scale * 0.35f),
+                Offset(cx + scale * 0.6f, cy - scale * 0.35f),
+                Offset(cx + scale * 0.6f, cy + scale * 0.35f),
+                Offset(cx - scale * 0.6f, cy + scale * 0.35f)
+            )
 
-            // Depth calculation: fade elements resting on the back wall to increase 3D realism
-            val isFacingFront = sin(angle) > 0
-            val lineAlpha = if (isFacingFront) 0.65f else 0.2f
+            // Outer front frame
+            for (i in 0..3) {
+                drawLine(
+                    color = baseColor.copy(alpha = boxAlpha),
+                    start = corners[i],
+                    end = corners[(i + 1) % 4],
+                    strokeWidth = strokeWidth * 1.2f
+                )
+                // Depth lines connecting front to back wall
+                drawLine(
+                    color = baseColor.copy(alpha = boxAlpha * 0.5f),
+                    start = corners[i],
+                    end = corners[i + 4],
+                    strokeWidth = strokeWidth * 0.8f
+                )
+                // Inner back wall frame
+                drawLine(
+                    color = baseColor.copy(alpha = boxAlpha * 0.4f),
+                    start = corners[i + 4],
+                    end = corners[((i + 1) % 4) + 4],
+                    strokeWidth = strokeWidth * 0.8f
+                )
+                // Acoustic dampening nodes at corners
+                drawCircle(
+                    color = primaryColor.copy(alpha = boxAlpha),
+                    radius = 3.dp.toPx() * roomWeight,
+                    center = corners[i]
+                )
+            }
+        }
 
+        // ─── 2. CONCERT HALL: 3D Parabolic Acoustic Cathedral Dome & Stage Ribs ──────────
+        if (hallWeight > 0.001f) {
+            val domeAlpha = 0.85f * hallWeight
+            val ribCount = 8
+            val maxRx = w * 0.35f * hallWeight
+            val maxRy = h * 0.42f * hallWeight
+
+            for (i in 0 until ribCount) {
+                val progress = i.toFloat() / (ribCount - 1)
+                val rx = maxRx * (0.3f + 0.7f * progress)
+                val ry = maxRy * (0.3f + 0.7f * progress)
+                val pulse = sin(phase * 2f + i * 0.5f) * 4f
+
+                val domePath = Path().apply {
+                    for (step in 0..60) {
+                        val a = (step.toFloat() / 60f) * PI.toFloat() // Top half-arch dome
+                        val x = cx + (rx + pulse) * cos(a)
+                        val y = (cy + maxRy * 0.3f) - (ry + pulse) * sin(a)
+                        if (step == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                }
+                drawPath(
+                    path = domePath,
+                    color = secondaryColor.copy(alpha = domeAlpha * (0.3f + 0.7f * progress)),
+                    style = Stroke(width = strokeWidth * (1f + progress * 0.5f))
+                )
+            }
+            // Stage floor reflection baseline
             drawLine(
-                color = wireColor.copy(alpha = lineAlpha),
-                start = Offset(px, pTopY),
-                end = Offset(px, pBottomY),
-                strokeWidth = strokeWidth
+                color = secondaryColor.copy(alpha = domeAlpha * 0.6f),
+                start = Offset(cx - maxRx, cy + maxRy * 0.35f),
+                end = Offset(cx + maxRx, cy + maxRy * 0.35f),
+                strokeWidth = strokeWidth * 1.5f
             )
         }
 
-        // 4. Draw Top Ring Oval Rim
-        val topPath = Path().apply {
-            for (step in 0..100) {
-                val angle = (step.toFloat() / 100f) * (2 * PI).toFloat()
-                val x = cx + rx * cos(angle)
-                val y = topCenterY + ry * sin(angle)
-                if (step == 0) moveTo(x, y) else lineTo(x, y)
-            }
-            close()
-        }
-        drawPath(
-            path = topPath,
-            color = wireColor.copy(alpha = 0.8f),
-            style = Stroke(width = strokeWidth)
-        )
+        // ─── 3. STADIUM: Open Arena Oval System with Expanding Wavefront Rings ───────────
+        if (stadiumWeight > 0.001f) {
+            val stadiumAlpha = 0.85f * stadiumWeight
+            val ringCount = 5
+            val rxBase = w * 0.38f * stadiumWeight
+            val ryBase = h * 0.35f * stadiumWeight
 
-        // 5. Draw Bottom Ring Oval Rim
-        val bottomPath = Path().apply {
-            for (step in 0..100) {
-                val angle = (step.toFloat() / 100f) * (2 * PI).toFloat()
-                val x = cx + rx * cos(angle)
-                val y = bottomCenterY + ry * sin(angle)
-                if (step == 0) moveTo(x, y) else lineTo(x, y)
+            for (r in 0 until ringCount) {
+                val wavePhase = (phase * 1.5f + r * 0.8f) % (2f * PI.toFloat())
+                val expansion = 0.3f + 0.7f * (r.toFloat() / (ringCount - 1))
+                val rx = rxBase * expansion
+                val ry = ryBase * expansion
+                val ringAlpha = stadiumAlpha * (0.2f + 0.8f * abs(sin(wavePhase)))
+
+                val ringPath = Path().apply {
+                    for (step in 0..80) {
+                        val angle = (step.toFloat() / 80f) * (2 * PI.toFloat())
+                        val x = cx + rx * cos(angle)
+                        val y = cy + ry * sin(angle)
+                        if (step == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
+                }
+                drawPath(
+                    path = ringPath,
+                    color = tertiaryColor.copy(alpha = ringAlpha),
+                    style = Stroke(width = strokeWidth * (1f + (1f - expansion)))
+                )
             }
-            close()
+            // Radiating acoustic light beacons around arena perimeter
+            for (b in 0 until 12) {
+                val angle = (b.toFloat() / 12f) * (2 * PI).toFloat() + phase * 0.5f
+                val bx = cx + rxBase * cos(angle)
+                val by = cy + ryBase * sin(angle)
+                drawCircle(
+                    color = tertiaryColor.copy(alpha = stadiumAlpha * 0.7f),
+                    radius = 2.5.dp.toPx() * stadiumWeight,
+                    center = Offset(bx, by)
+                )
+            }
         }
-        drawPath(
-            path = bottomPath,
-            color = wireColor.copy(alpha = 0.8f),
-            style = Stroke(width = strokeWidth)
-        )
+
+        // ─── 4. PLATE: Floating 3D Metallic Matrix Lattice with Vibrating Tension Nodes ──
+        if (plateWeight > 0.001f) {
+            val plateAlpha = 0.85f * plateWeight
+            val cols = 7
+            val rows = 5
+            val spacingX = (w * 0.55f * plateWeight) / (cols - 1)
+            val spacingY = (h * 0.5f * plateWeight) / (rows - 1)
+            val startX = cx - (cols - 1) * spacingX / 2f
+            val startY = cy - (rows - 1) * spacingY / 2f
+
+            val points = Array(rows) { r ->
+                Array(cols) { c ->
+                    val wave = sin(phase * 3f + (r + c) * 0.7f) * (4.dp.toPx() * plateWeight)
+                    Offset(startX + c * spacingX, startY + r * spacingY + wave)
+                }
+            }
+
+            // Draw lattice grid lines
+            for (r in 0 until rows) {
+                for (c in 0 until cols) {
+                    if (c < cols - 1) {
+                        drawLine(
+                            color = primaryColor.copy(alpha = plateAlpha * 0.6f),
+                            start = points[r][c],
+                            end = points[r][c + 1],
+                            strokeWidth = strokeWidth
+                        )
+                    }
+                    if (r < rows - 1) {
+                        drawLine(
+                            color = primaryColor.copy(alpha = plateAlpha * 0.6f),
+                            start = points[r][c],
+                            end = points[r + 1][c],
+                            strokeWidth = strokeWidth
+                        )
+                    }
+                    drawCircle(
+                        color = secondaryColor.copy(alpha = plateAlpha),
+                        radius = 2.dp.toPx() * plateWeight,
+                        center = points[r][c]
+                    )
+                }
+            }
+        }
+
+        // ─── 5. SPRING: Vertical Dual Interlocking Springs (Accordion Bounce Effect) ─────
+        if (springWeight > 0.001f) {
+            val springAlpha = 0.85f * springWeight
+            val totalCoils = 10
+            val maxSpringHeight = h * 0.72f * springWeight
+            val rx = 16.dp.toPx() * springWeight
+            val ry = 7.dp.toPx() * springWeight
+            val springSpacing = 42.dp.toPx() * springWeight
+
+            val springCentersX = listOf(cx - springSpacing / 2f, cx + springSpacing / 2f)
+            val totalSteps = 160
+
+            springCentersX.forEachIndexed { sIdx, springCx ->
+                val phaseDirection = if (sIdx == 0) 1f else -1f
+                // Opposite phase accordion bounce animation
+                val bouncePhase = phase * 4f * phaseDirection
+                val dynamicHeight = maxSpringHeight * (0.82f + 0.18f * sin(bouncePhase))
+                val startY = cy - dynamicHeight / 2f
+
+                var prevPt: Offset? = null
+                var prevAlpha = 0f
+                var prevStroke = strokeWidth
+
+                for (step in 0..totalSteps) {
+                    val progress = step.toFloat() / totalSteps.toFloat()
+                    
+                    // Vertical compression / extension wave propagation along the spring
+                    val waveCompression = sin(bouncePhase + progress * 8f) * 0.08f
+                    val adjustedProgress = (progress + waveCompression).coerceIn(0f, 1f)
+                    
+                    val py = startY + adjustedProgress * dynamicHeight
+                    val angle = progress * totalCoils * (2 * PI).toFloat() + phase * 3f * phaseDirection
+                    
+                    val px = springCx + rx * cos(angle)
+                    val zDepth = sin(angle) // -1.0 (back) to +1.0 (front)
+
+                    val segmentAlpha = springAlpha * (0.35f + 0.65f * ((zDepth + 1f) / 2f))
+                    val segmentStroke = strokeWidth * (0.75f + 0.85f * ((zDepth + 1f) / 2f))
+                    val currPt = Offset(px, py)
+
+                    if (prevPt != null) {
+                        val lineColor = if (sIdx == 0) primaryColor else secondaryColor
+                        drawLine(
+                            color = lineColor.copy(alpha = (segmentAlpha + prevAlpha) / 2f),
+                            start = prevPt,
+                            end = currPt,
+                            strokeWidth = (segmentStroke + prevStroke) / 2f
+                        )
+                    }
+
+                    // Acoustic spark nodes on front coil peaks
+                    if (zDepth > 0.92f && step % 12 == 0) {
+                        drawCircle(
+                            color = if (sIdx == 0) primaryColor else tertiaryColor,
+                            radius = 2.5.dp.toPx() * springWeight,
+                            center = currPt
+                        )
+                    }
+
+                    prevPt = currPt
+                    prevAlpha = segmentAlpha
+                    prevStroke = segmentStroke
+                }
+
+                // Connecting top and bottom mounting plates for realism
+                drawLine(
+                    color = baseColor.copy(alpha = springAlpha * 0.7f),
+                    start = Offset(springCx - rx, startY),
+                    end = Offset(springCx + rx, startY),
+                    strokeWidth = strokeWidth * 1.5f
+                )
+                drawLine(
+                    color = baseColor.copy(alpha = springAlpha * 0.7f),
+                    start = Offset(springCx - rx, startY + dynamicHeight),
+                    end = Offset(springCx + rx, startY + dynamicHeight),
+                    strokeWidth = strokeWidth * 1.5f
+                )
+            }
+        }
+
+        // ─── 0. RESTING / OFF: Subtle Ambient Pulse Wave ──────────────────────────────
+        if (totalActiveWeight < 0.1f) {
+            val restingAlpha = (1f - totalActiveWeight * 10f).coerceIn(0f, 1f) * 0.35f
+            val pulseRadius = (w * 0.2f) + sin(phase * 2f) * 5.dp.toPx()
+            drawCircle(
+                color = baseColor.copy(alpha = restingAlpha),
+                radius = pulseRadius,
+                center = Offset(cx, cy),
+                style = Stroke(width = strokeWidth)
+            )
+        }
     }
 }
 
@@ -206,11 +406,13 @@ fun LoudnessRingIndicator(
     enabled: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val coolTeal = Color(0xFF4DD0E1)
-    val warmAmber = Color(0xFFFFB74D)
-    val dangerRed = Color(0xFFFF5252)
+    val coolTeal = MaterialTheme.colorScheme.primary
+    val warmAmber = MaterialTheme.colorScheme.tertiary
+    val dangerRed = MaterialTheme.colorScheme.error
     val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
     val primaryColor = MaterialTheme.colorScheme.primary
+    val scrimColor = MaterialTheme.colorScheme.scrim
+    val onPrimaryColor = MaterialTheme.colorScheme.onPrimary
 
     val animatedGain by animateFloatAsState(
         targetValue = gain,
@@ -223,17 +425,21 @@ fun LoudnessRingIndicator(
 
     val fraction = (animatedGain / 12f).coerceIn(0f, 1f)
 
-    // Jitter phase for needle vibration at high levels
-    val infiniteTransition = rememberInfiniteTransition(label = "loudness_jitter")
-    val jitterPhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2f * PI.toFloat()),
-        animationSpec = infiniteRepeatable(
-            animation = tween(150, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "jitter"
-    )
+    var jitterPhase by remember { mutableStateOf(0f) }
+    LaunchedEffect(enabled, gain) {
+        if (enabled && gain > 8f) {
+            val duration = 150
+            val startTime = System.currentTimeMillis()
+            while (true) {
+                withFrameNanos {
+                    val elapsed = (System.currentTimeMillis() - startTime) % duration
+                    jitterPhase = (elapsed.toFloat() / duration.toFloat()) * (2f * PI.toFloat())
+                }
+            }
+        } else {
+            jitterPhase = 0f
+        }
+    }
 
     // Needle jitter scales up past 8 dB
     val jitter = if (enabled && gain > 8f) {
@@ -244,7 +450,7 @@ fun LoudnessRingIndicator(
     // dB text readout
     val textMeasurer = rememberTextMeasurer()
     val dbText = if (gain > 0f) "+${gain.toInt()} dB" else "0 dB"
-    val textStyle = TextStyle(
+    val textStyle = MaterialTheme.typography.labelLarge.copy(
         fontSize = 14.sp,
         fontWeight = FontWeight.Bold,
         textAlign = TextAlign.Center
@@ -351,7 +557,7 @@ fun LoudnessRingIndicator(
         // Shadow for the needle to give depth
         if (enabled) {
             drawLine(
-                color = Color.Black.copy(alpha = 0.15f),
+                color = scrimColor.copy(alpha = 0.15f),
                 start = Offset(pivotX + 2.5.dp.toPx(), pivotY + 2.5.dp.toPx()),
                 end = Offset(needleEndX + 2.5.dp.toPx(), needleEndY + 2.5.dp.toPx()),
                 strokeWidth = 2.5.dp.toPx(),
@@ -380,7 +586,7 @@ fun LoudnessRingIndicator(
             center = Offset(pivotX, pivotY)
         )
         drawCircle(
-            color = Color.White,
+            color = onPrimaryColor,
             radius = 2.dp.toPx(),
             center = Offset(pivotX, pivotY)
         )
@@ -450,17 +656,21 @@ fun BalanceChannelMeter(
     val leftIntensity = if (enabled) cos(panAngle) else 0.3f
     val rightIntensity = if (enabled) sin(panAngle) else 0.3f
 
-    // Infinite transition for wave propagation animation
-    val infiniteTransition = rememberInfiniteTransition(label = "balance_ripple")
-    val waveOffsetFraction by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "ripple_offset"
-    )
+    var waveOffsetFraction by remember { mutableStateOf(0f) }
+    LaunchedEffect(enabled) {
+        if (enabled) {
+            val duration = 1200
+            val startTime = System.currentTimeMillis()
+            while (true) {
+                withFrameNanos {
+                    val elapsed = (System.currentTimeMillis() - startTime) % duration
+                    waveOffsetFraction = elapsed.toFloat() / duration.toFloat()
+                }
+            }
+        } else {
+            waveOffsetFraction = 0f
+        }
+    }
 
     Canvas(
         modifier = modifier
@@ -634,9 +844,12 @@ fun SpeedDialVisualizer(
 
     // Continuous, frame-aligned delta accumulation loop to handle dynamic speed changes smoothly without jumping
     var phase by remember { mutableStateOf(0f) }
+    var wobblePhase by remember { mutableStateOf(0f) }
     LaunchedEffect(enabled, speed) {
         if (enabled) {
             var lastTime = withFrameNanos { it }
+            val wobbleDuration = 600
+            val startTime = System.currentTimeMillis()
             while (true) {
                 withFrameNanos { time ->
                     val deltaSeconds = (time - lastTime) / 1_000_000_000f
@@ -644,28 +857,25 @@ fun SpeedDialVisualizer(
                     // 1.0x speed = 2 * PI radians in 1.8 seconds -> speed coefficient scales this rate
                     val rate = (2f * PI.toFloat() / 1.8f) * speed
                     phase = (phase + rate * deltaSeconds) % (2f * PI.toFloat())
+
+                    val wobbleElapsed = (System.currentTimeMillis() - startTime) % wobbleDuration
+                    wobblePhase = (wobbleElapsed.toFloat() / wobbleDuration.toFloat()) * (2f * PI.toFloat())
                 }
             }
+        } else {
+            wobblePhase = 0f
         }
     }
-
-    val infiniteTransition = rememberInfiniteTransition(label = "speed_wave")
-    // Secondary phase for vinyl wobble noise
-    val wobblePhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(600, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "wobble"
-    )
 
     val waveColor = when {
         !enabled -> onSurfaceVariant.copy(alpha = 0.2f)
         !isPitchMatched -> tertiaryColor // Vinyl mode: warm tint
         else -> primaryColor
     }
+
+    val vinylDiscColor = MaterialTheme.colorScheme.surfaceContainerLowest
+    val vinylGrooveColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f)
+    val vinylSpindleColor = MaterialTheme.colorScheme.surfaceContainerHighest
 
     Canvas(
         modifier = modifier
@@ -682,7 +892,7 @@ fun SpeedDialVisualizer(
         val recordCenterY = midY
 
         val platterColor = onSurfaceVariant.copy(alpha = 0.15f)
-        val vinylColor = Color(0xFF141414)
+        val vinylColor = vinylDiscColor
 
         // Turntable Platter Ambient Glow
         if (enabled) {
@@ -714,7 +924,7 @@ fun SpeedDialVisualizer(
 
         // Concentric Vinyl Grooves
         if (enabled) {
-            val grooveColor = Color.White.copy(alpha = 0.05f)
+            val grooveColor = vinylGrooveColor
             drawCircle(color = grooveColor, radius = recordRadius * 0.8f, center = Offset(recordCenterX, recordCenterY), style = Stroke(width = 1f))
             drawCircle(color = grooveColor, radius = recordRadius * 0.65f, center = Offset(recordCenterX, recordCenterY), style = Stroke(width = 1f))
             drawCircle(color = grooveColor, radius = recordRadius * 0.5f, center = Offset(recordCenterX, recordCenterY), style = Stroke(width = 1f))
@@ -729,7 +939,7 @@ fun SpeedDialVisualizer(
 
         // Center spindle hole
         drawCircle(
-            color = Color(0xFF222222),
+            color = vinylSpindleColor,
             radius = recordRadius * 0.08f,
             center = Offset(recordCenterX, recordCenterY)
         )
@@ -790,45 +1000,44 @@ fun SpeedDialVisualizer(
 @Composable
 fun Spatial8DVisualizer(
     enabled: Boolean,
+    speedHz: Float = 0.15f,
     modifier: Modifier = Modifier
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
     val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
-    val infiniteTransition = rememberInfiniteTransition(label = "8d_visualizer")
-    
-    // Orbital rotation angle in degrees
-    val rotationAngle by infiniteTransition.animateFloat(
+    val durationMs = ((1.0f / speedHz.coerceIn(0.03f, 0.40f)) * 1000f).toInt().coerceIn(1500, 20000)
+    val transition = rememberInfiniteTransition(label = "8DInfiniteTransition")
+
+    val rotationAngle by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 360f,
+        targetValue = if (enabled) 360f else 0f,
         animationSpec = infiniteRepeatable(
-            animation = tween(6000, easing = LinearEasing),
+            animation = tween(durationMillis = durationMs, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "rotation"
+        label = "8DRotation"
     )
 
-    // Waves propagation offset
-    val waveOffset by infiniteTransition.animateFloat(
+    val waveOffset by transition.animateFloat(
         initialValue = 0f,
-        targetValue = 1f,
+        targetValue = if (enabled) 1f else 0f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
+            animation = tween(durationMillis = 1200, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "wave"
+        label = "8DWave"
     )
 
-    // Breathing pulse for headphones
-    val pulseScale by infiniteTransition.animateFloat(
+    val pulseScale by transition.animateFloat(
         initialValue = 0.96f,
-        targetValue = 1.04f,
+        targetValue = if (enabled) 1.04f else 1.0f,
         animationSpec = infiniteRepeatable(
-            animation = tween(1000, easing = LinearEasing),
+            animation = tween(durationMillis = 1000, easing = androidx.compose.animation.core.FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "pulse"
+        label = "8DPulse"
     )
 
     val density = LocalDensity.current

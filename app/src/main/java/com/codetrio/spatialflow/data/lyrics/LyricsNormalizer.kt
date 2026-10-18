@@ -73,6 +73,30 @@ class LyricsNormalizer {
     }
 
     companion object {
+        private val LRC_WORD_PATTERN = Regex("""[<(]\d{1,2}:\d{2}[.:]\d{2,3}[>)]""")
+        private val TTML_WORD_SPAN_PATTERN = Regex("""<span[^>]+(?:begin|ttm:begin)\s*=""", RegexOption.IGNORE_CASE)
+
+        /**
+         * Accurately determines if a lyrics payload contains true word-by-word (Karaoke) timestamps.
+         * Distinguishes line-by-line TTML/LRC from true word-by-word TTML/LRC.
+         */
+        @JvmStatic
+        fun checkIsWordByWord(lyricsText: String?): Boolean {
+            if (lyricsText.isNullOrEmpty()) return false
+
+            // 1. Enhanced LRC check: word timestamps like <00:12.34> or (00:12.34)
+            if (LRC_WORD_PATTERN.containsMatchIn(lyricsText)) {
+                return true
+            }
+
+            // 2. TTML check: MUST contain <span begin="..."> word spans inside lines
+            val isTtml = lyricsText.contains("<tt") || lyricsText.contains("<p begin=") || lyricsText.contains("ttm:begin")
+            if (isTtml) {
+                return TTML_WORD_SPAN_PATTERN.containsMatchIn(lyricsText)
+            }
+
+            return false
+        }
 
         /**
          * Normalize a string for fuzzy comparison.

@@ -6,6 +6,8 @@ import com.codetrio.spatialflow.data.lyrics.LrcParser
 import com.codetrio.spatialflow.data.lyrics.LyricLine
 import com.codetrio.spatialflow.data.lyrics.LyricsRepository
 import com.codetrio.spatialflow.data.lyrics.LyricsResult
+import com.codetrio.spatialflow.data.lyrics.LyricsRomanizationPreferences
+import com.codetrio.spatialflow.data.lyrics.LyricsRomanizer
 import com.codetrio.spatialflow.data.lyrics.LyricsState
 import com.codetrio.spatialflow.model.SongItem
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 class PlayerLyricsStateController(private val logTag: String) {
     private var activeLyricsTrackKey: String? = null
+    private var applicationContext: Context? = null
 
     private val _syncedLyrics = MutableStateFlow<List<LyricLine>?>(null)
     val syncedLyrics: StateFlow<List<LyricLine>?> = _syncedLyrics.asStateFlow()
@@ -47,6 +50,34 @@ class PlayerLyricsStateController(private val logTag: String) {
 
     val shouldShowLyrics: Boolean get() = _isLyricsModeEnabled.value
 
+    private fun romanizeIfEnabled(lines: List<LyricLine>): List<LyricLine> {
+        val context = applicationContext ?: return lines
+        val prefs = LyricsRomanizationPreferences.fromContext(context)
+        return LyricsRomanizer.romanizeLines(lines, prefs)
+    }
+
+    private fun romanizePlainIfEnabled(text: String): String {
+        val context = applicationContext ?: return text
+        val prefs = LyricsRomanizationPreferences.fromContext(context)
+        return if (prefs.isEnabled) {
+            LyricsRomanizer.romanizePlainLyrics(text, prefs)
+        } else {
+            text
+        }
+    }
+
+    fun refreshRomanization(context: Context? = null) {
+        context?.let { applicationContext = it.applicationContext }
+        val currentLines = _syncedLyrics.value
+        if (!currentLines.isNullOrEmpty()) {
+            _syncedLyrics.value = romanizeIfEnabled(currentLines)
+        }
+        val currentPlain = _plainLyrics.value
+        if (!currentPlain.isNullOrBlank()) {
+            _plainLyrics.value = romanizePlainIfEnabled(currentPlain)
+        }
+    }
+
     private fun getTrackKey(song: SongItem?): String? {
         if (song == null) return null
         return song.videoId ?: song.path ?: song.id.toString()
@@ -54,6 +85,7 @@ class PlayerLyricsStateController(private val logTag: String) {
 
     fun setLyricsModeEnabled(enabled: Boolean, context: Context? = null, song: SongItem? = null) {
         _isLyricsModeEnabled.value = enabled
+        context?.let { applicationContext = it.applicationContext }
         if (enabled && context != null && song != null) {
             if (_syncedLyrics.value.isNullOrEmpty() && _plainLyrics.value.isNullOrBlank() && _lyricsState.value != LyricsState.FETCHING) {
                 fetchLyrics(context, song)
@@ -73,13 +105,37 @@ class PlayerLyricsStateController(private val logTag: String) {
         _selectedProvider.value = null
     }
 
+    fun updateCustomLyrics(lyricsText: String, context: Context? = null) {
+        context?.let { applicationContext = it.applicationContext }
+        val parsedLines = LrcParser.parse(lyricsText)
+        if (parsedLines.isNotEmpty()) {
+            _syncedLyrics.value = romanizeIfEnabled(parsedLines)
+            _plainLyrics.value = null
+        } else {
+            _syncedLyrics.value = null
+            val rawPlain = sanitizePlainLyrics(lyricsText).ifBlank { null }
+            _plainLyrics.value = rawPlain?.let { romanizePlainIfEnabled(it) }
+        }
+        _lyricsState.value = LyricsState.SUCCESS
+        _error.value = null
+    }
+
     fun fetchLyrics(context: Context, song: SongItem?) {
         if (song == null) return
+        applicationContext = context.applicationContext
 
         val repository = LyricsRepository.getInstance(context)
         val trackKey = getTrackKey(song)
         activeLyricsTrackKey = trackKey
         repository.cancelCurrent()
+
+        // Check local custom/edited lyrics storage or sidecar file first
+        val customLyrics = com.codetrio.spatialflow.data.lyrics.CustomLyricsStorage.getCustomLyrics(context, song)
+            ?: com.codetrio.spatialflow.data.lyrics.CustomLyricsStorage.findSidecarLyrics(song)
+        if (!customLyrics.isNullOrBlank()) {
+            updateCustomLyrics(customLyrics)
+            return
+        }
 
         // Reset state
         _lyricsState.value = LyricsState.IDLE
@@ -110,6 +166,7 @@ class PlayerLyricsStateController(private val logTag: String) {
 
     fun retryLyrics(context: Context, song: SongItem?) {
         if (song == null) return
+        applicationContext = context.applicationContext
 
         val trackKey = getTrackKey(song)
         activeLyricsTrackKey = trackKey
@@ -142,6 +199,7 @@ class PlayerLyricsStateController(private val logTag: String) {
     }
 
     fun selectProvider(providerName: String, context: Context? = null, song: SongItem? = null) {
+        context?.let { applicationContext = it.applicationContext }
         val result = _providerResults.value[providerName]
         if (result != null && result.hasLyrics()) {
             _selectedProvider.value = providerName
@@ -158,21 +216,13 @@ class PlayerLyricsStateController(private val logTag: String) {
 
         // Ensure isWordByWord flag is accurately populated from content heuristics
         candidates.forEach { candidate ->
-            if (!candidate.isWordByWord && !candidate.syncedLyrics.isNullOrEmpty() &&
-                candidate.syncedLyrics!!.contains(Regex("""<\d+:\d{2}[.:]\d+>"""))
-            ) {
-                candidate.isWordByWord = true
-            }
+            candidate.isWordByWord = com.codetrio.spatialflow.data.lyrics.LyricsNormalizer.checkIsWordByWord(candidate.syncedLyrics)
         }
 
         // First priority: Karaoke (word-by-word)
         val karaokeCandidates = candidates.filter { it.isWordByWord && it.hasLyrics() }
         if (karaokeCandidates.isNotEmpty()) {
-            return karaokeCandidates.maxWithOrNull(
-                compareBy<LyricsResult> { it.providerName?.startsWith("BetterLyrics") == true }
-                    .thenBy { it.providerName == "SyncLRC" }
-                    .thenBy { it.confidence }
-            )
+            return karaokeCandidates.maxByOrNull { it.confidence }
         }
 
         // Second priority: Synced
@@ -213,9 +263,10 @@ class PlayerLyricsStateController(private val logTag: String) {
             override fun onLyricsUpgraded(betterResult: LyricsResult) {
                 if (!isActiveLyricsRequest(requestTrackKey)) return
 
-                if (_selectedProvider.value == null && !betterResult.syncedLyrics.isNullOrEmpty()) {
-                    val lines = LrcParser.parse(betterResult.syncedLyrics)
-                    _syncedLyrics.value = lines
+                val upgradedSynced = betterResult.syncedLyrics
+                if (_selectedProvider.value == null && !upgradedSynced.isNullOrEmpty()) {
+                    val lines = LrcParser.parse(upgradedSynced)
+                    _syncedLyrics.value = romanizeIfEnabled(lines)
                     _plainLyrics.value = null
                     _lyricsState.value = LyricsState.SUCCESS
                     if (logUpgrades) {
@@ -288,14 +339,49 @@ class PlayerLyricsStateController(private val logTag: String) {
     }
 
     private fun applyLyricsResult(result: LyricsResult) {
-        if (!result.syncedLyrics.isNullOrEmpty()) {
-            val lines = LrcParser.parse(result.syncedLyrics)
-            _syncedLyrics.value = lines
-            _plainLyrics.value = null
-        } else if (!result.plainLyrics.isNullOrEmpty()) {
-            _syncedLyrics.value = null
-            _plainLyrics.value = result.plainLyrics
+        val synced = result.syncedLyrics
+        val plain = result.plainLyrics
+        if (!synced.isNullOrEmpty()) {
+            val lines = LrcParser.parse(synced)
+            if (lines.isNotEmpty()) {
+                _syncedLyrics.value = romanizeIfEnabled(lines)
+                _plainLyrics.value = null
+                return
+            }
         }
+        
+        if (!plain.isNullOrEmpty()) {
+            _syncedLyrics.value = null
+            val cleanPlain = sanitizePlainLyrics(plain)
+            _plainLyrics.value = if (cleanPlain.isNotBlank()) romanizePlainIfEnabled(cleanPlain) else null
+        } else {
+            _syncedLyrics.value = null
+            _plainLyrics.value = null
+        }
+    }
+
+    private fun sanitizePlainLyrics(plain: String): String {
+        var s = plain.trim()
+        if (s.startsWith("{") && s.endsWith("}")) {
+            try {
+                val json = com.google.gson.JsonParser.parseString(s).asJsonObject
+                for (key in listOf("lyrics", "plainLyrics", "content", "data", "text")) {
+                    if (json.has(key) && json.get(key).isJsonPrimitive) {
+                        s = json.get(key).asString.trim()
+                        break
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+        if (s.contains("<tt", ignoreCase = true) || s.contains("<?xml", ignoreCase = true) || s.contains("<p", ignoreCase = true)) {
+            val pMatches = Regex("""<p\b[^>]*>(.*?)</p>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)).findAll(s)
+            val extracted = pMatches.map { it.groupValues[1].replace(Regex("<[^>]+>"), "").trim() }.filter { it.isNotEmpty() }.joinToString("\n")
+            if (extracted.isNotBlank()) {
+                return extracted
+            }
+            return s.replace(Regex("<[^>]+>"), "").trim()
+        }
+        return s.replace(Regex("<[^>]+>"), "").trim()
     }
 
     private fun hasLyricsData(): Boolean {

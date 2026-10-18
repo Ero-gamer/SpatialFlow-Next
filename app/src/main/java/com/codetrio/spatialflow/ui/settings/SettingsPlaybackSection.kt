@@ -116,6 +116,10 @@ fun PlaybackScreen(
     onCrossfadeDurationChange: (Float) -> Unit,
     crossfadeMode: String,
     onCrossfadeModeChange: (String) -> Unit,
+    autoMixEnabled: Boolean = false,
+    onAutoMixToggle: (Boolean) -> Unit = {},
+    autoMixPerformanceMode: String = "BALANCED",
+    onAutoMixPerformanceModeChange: (String) -> Unit = {},
     audioFocus: Boolean,
     onAudioFocusToggle: (Boolean) -> Unit,
     disconnectAction: String,
@@ -228,7 +232,12 @@ fun PlaybackScreen(
 
             SettingsHeader("Crossfade")
             SettingsGroupCard(listOf(
-                { CrossfadeRow(crossfadeEnabled, onCrossfadeToggle, crossfadeDuration, onCrossfadeDurationChange, crossfadeMode, onCrossfadeModeChange, isBitPerfect = isBitPerfect) }
+                { CrossfadeRow(crossfadeEnabled, onCrossfadeToggle, crossfadeDuration, onCrossfadeDurationChange, crossfadeMode, onCrossfadeModeChange, isBitPerfect = isBitPerfect, autoMixEnabled = autoMixEnabled) }
+            ))
+
+            SettingsHeader("AutoMix (DJ Transitions)")
+            SettingsGroupCard(listOf(
+                { AutoMixRow(autoMixEnabled, onAutoMixToggle, autoMixPerformanceMode, onAutoMixPerformanceModeChange, isBitPerfect = isBitPerfect) }
             ))
             
             SettingsHeader("Audio Focus")
@@ -532,9 +541,11 @@ fun CrossfadeRow(
     onDurationChange: (Float) -> Unit,
     mode: String,
     onModeChange: (String) -> Unit,
-    isBitPerfect: Boolean = QualityModeSelector.isBitPerfectActive(LocalContext.current)
+    isBitPerfect: Boolean = QualityModeSelector.isBitPerfectActive(LocalContext.current),
+    autoMixEnabled: Boolean = false
 ) {
     val haptic = LocalHapticFeedback.current
+    val effectiveEnabled = enabled && !autoMixEnabled
     Column(modifier = Modifier.fillMaxWidth()) {
         ListItem(
             headlineContent = {
@@ -546,6 +557,8 @@ fun CrossfadeRow(
             supportingContent = {
                 val subtitle = if (isBitPerfect) {
                     "Unavailable in Bit-Perfect mode"
+                } else if (autoMixEnabled) {
+                    "Disabled while AutoMix is active"
                 } else if (!enabled) {
                     "Off"
                 } else if (mode == "auto") {
@@ -570,7 +583,7 @@ fun CrossfadeRow(
             },
             trailingContent = {
                 Switch(
-                    checked = enabled && !isBitPerfect,
+                    checked = effectiveEnabled && !isBitPerfect,
                     enabled = !isBitPerfect,
                     onCheckedChange = onToggle
                 )
@@ -578,7 +591,7 @@ fun CrossfadeRow(
             colors = ListItemDefaults.colors(containerColor = Color.Transparent)
         )
 
-        AnimatedVisibility(visible = enabled && !isBitPerfect) {
+        AnimatedVisibility(visible = effectiveEnabled && !isBitPerfect) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -651,6 +664,146 @@ fun CrossfadeRow(
                             valueRange = 1f..12f,
                             steps = 10,
                             modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun AutoMixRow(
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit,
+    performanceMode: String,
+    onPerformanceModeChange: (String) -> Unit,
+    isBitPerfect: Boolean = QualityModeSelector.isBitPerfectActive(LocalContext.current)
+) {
+    val haptic = LocalHapticFeedback.current
+    Column(modifier = Modifier.fillMaxWidth()) {
+        ListItem(
+            headlineContent = {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.setting_automix),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    BetaPill(text = "Experimental")
+                }
+            },
+            supportingContent = {
+                val subtitle = if (isBitPerfect) {
+                    "Unavailable in Bit-Perfect mode"
+                } else if (!enabled) {
+                    "Off"
+                } else {
+                    when (performanceMode.uppercase()) {
+                        "EFFICIENT" -> "Efficient (Fast analysis)"
+                        "PERFORMANCE" -> "Precision (Deep analysis)"
+                        else -> "Balanced (Smart transitions)"
+                    }
+                }
+                AnimatedContent(
+                    targetState = subtitle,
+                    transitionSpec = {
+                        fadeIn(spring(stiffness = Spring.StiffnessMedium)) togetherWith
+                            fadeOut(spring(stiffness = Spring.StiffnessMedium))
+                    },
+                    label = "automix_label"
+                ) { label ->
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isBitPerfect) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            trailingContent = {
+                Switch(
+                    checked = enabled && !isBitPerfect,
+                    enabled = !isBitPerfect,
+                    onCheckedChange = onToggle
+                )
+            },
+            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+        )
+
+        AnimatedVisibility(visible = enabled && !isBitPerfect) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 16.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.setting_automix_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+
+                ButtonGroup(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween),
+                    expandedRatio = 0.25f,
+                    overflowIndicator = {}
+                ) {
+                    val scope = this
+                    val modes = listOf(
+                        "EFFICIENT" to "Efficient",
+                        "BALANCED" to "Balanced",
+                        "PERFORMANCE" to "Precision"
+                    )
+                    modes.forEachIndexed { _, (key, label) ->
+                        val checked = performanceMode.equals(key, ignoreCase = true)
+                        customItem(
+                            buttonGroupContent = {
+                                val interactionSource = remember { MutableInteractionSource() }
+                                val isPressed by interactionSource.collectIsPressedAsState()
+                                val cornerRadius by animateDpAsState(
+                                    targetValue = if (isPressed) 6.dp else if (checked) 20.dp else 10.dp,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMedium
+                                    ),
+                                    label = "AutoMixCorner"
+                                )
+
+                                Button(
+                                    onClick = {
+                                        if (!checked) {
+                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            onPerformanceModeChange(key)
+                                        }
+                                    },
+                                    modifier = with(scope) {
+                                        Modifier
+                                            .animateWidth(interactionSource)
+                                            .weight(1f)
+                                            .height(48.dp)
+                                    },
+                                    interactionSource = interactionSource,
+                                    shape = RoundedCornerShape(cornerRadius),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = if (checked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                        contentColor = if (checked) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                    )
+                                ) {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = if (checked) FontWeight.Bold else FontWeight.Medium
+                                    )
+                                }
+                            },
+                            menuContent = {}
                         )
                     }
                 }

@@ -4,10 +4,12 @@ import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import okhttp3.Cache
 import okhttp3.ConnectionPool
@@ -23,19 +25,19 @@ import java.util.concurrent.TimeUnit
  * Low-level HTTP client for YouTube Music's InnerTube API.
  * Handles request construction, authentication, and raw HTTP communication.
  */
-@OptIn(DelicateCoroutinesApi::class)
 object InnerTubeClient {
 
     private const val TAG = "InnerTubeClient"
     private const val BASE_URL = "https://music.youtube.com/youtubei/v1"
     private const val YOUTUBE_BASE_URL = "https://www.youtube.com/youtubei/v1"
     private const val JSON_MEDIA_TYPE = "application/json; charset=utf-8"
-
+    private val JSON_MEDIA_TYPE_OBJ = JSON_MEDIA_TYPE.toMediaType()
 
     private val gson = Gson()
 
     private fun buildClient(cacheDir: File? = null): OkHttpClient {
         val builder = OkHttpClient.Builder()
+            .dns(com.codetrio.spatialflow.data.network.FastFallbackDns)
             .connectionPool(ConnectionPool(20, 10, TimeUnit.MINUTES))
             .protocols(listOf(okhttp3.Protocol.HTTP_2, okhttp3.Protocol.HTTP_1_1))
             .pingInterval(15, TimeUnit.SECONDS)
@@ -59,51 +61,90 @@ object InnerTubeClient {
     var httpClient = buildClient()
         private set
 
+    private var appContext: android.content.Context? = null
+
     /**
      * Binds runtime context to initialize core HTTP disk caching and shared state hooks.
      * Recommended execution target: Application.onCreate().
      */
     @JvmStatic
     fun initialize(context: android.content.Context) {
+        appContext = context.applicationContext
         // Re-instantiate full persistence client with application storage context available
         httpClient = buildClient(context.applicationContext.cacheDir)
-        Log.d(TAG, "InnerTube client initialized with localized dynamic disk cache.")
+        Log.d(TAG, "InnerTube client initialized")
     }
 
     // ========== Client Configurations ==========
+
+    @Volatile
+    private var cachedWebRemixContext: JsonObject? = null
+    @Volatile
+    private var lastVisitorDataWebRemix: String? = null
 
     /**
      * WEB_REMIX client — used for search, browse, next (YouTube Music Web)
      */
     private fun webRemixContext(): JsonObject {
+        val currentVisitorData = visitorData
+        val cached = cachedWebRemixContext
+        if (cached != null && lastVisitorDataWebRemix == currentVisitorData) {
+            return cached.deepCopy()
+        }
         val client = JsonObject().apply {
             addProperty("clientName", "WEB_REMIX")
-            addProperty("clientVersion", "1.20260531.05.00")
+            addProperty("clientVersion", "1.20241118.01.00")
             addProperty("hl", Locale.getDefault().language)
             addProperty("gl", Locale.getDefault().country.ifEmpty { "US" })
-            visitorData?.let { addProperty("visitorData", it) }
+            currentVisitorData?.let { addProperty("visitorData", it) }
         }
-        return JsonObject().apply { add("client", client) }
+        val res = JsonObject().apply { add("client", client) }
+        cachedWebRemixContext = res
+        lastVisitorDataWebRemix = currentVisitorData
+        return res.deepCopy()
     }
+
+    @Volatile
+    private var cachedWebContext: JsonObject? = null
+    @Volatile
+    private var lastVisitorDataWeb: String? = null
 
     /**
      * WEB client — used for standard YouTube Web requests (e.g. nextYoutubeWeb)
      */
     private fun webContext(): JsonObject {
+        val currentVisitorData = visitorData
+        val cached = cachedWebContext
+        if (cached != null && lastVisitorDataWeb == currentVisitorData) {
+            return cached.deepCopy()
+        }
         val client = JsonObject().apply {
             addProperty("clientName", "WEB")
-            addProperty("clientVersion", "2.20250310.01.00")
+            addProperty("clientVersion", "2.20241118.01.00")
             addProperty("hl", Locale.getDefault().language)
             addProperty("gl", Locale.getDefault().country.ifEmpty { "US" })
-            visitorData?.let { addProperty("visitorData", it) }
+            currentVisitorData?.let { addProperty("visitorData", it) }
         }
-        return JsonObject().apply { add("client", client) }
+        val res = JsonObject().apply { add("client", client) }
+        cachedWebContext = res
+        lastVisitorDataWeb = currentVisitorData
+        return res.deepCopy()
     }
+
+    @Volatile
+    private var cachedAndroidContext: JsonObject? = null
+    @Volatile
+    private var lastVisitorDataAndroid: String? = null
 
     /**
      * ANDROID client — Core modern YouTube client for resilient logged-out streaming.
      */
     private fun androidContext(): JsonObject {
+        val currentVisitorData = visitorData
+        val cached = cachedAndroidContext
+        if (cached != null && lastVisitorDataAndroid == currentVisitorData) {
+            return cached.deepCopy()
+        }
         val client = JsonObject().apply {
             addProperty("clientName", "ANDROID")
             addProperty("clientVersion", "20.10.38")
@@ -113,20 +154,24 @@ object InnerTubeClient {
             addProperty("platform", "MOBILE")
             addProperty("hl", Locale.getDefault().language)
             addProperty("gl", Locale.getDefault().country.ifEmpty { "US" })
-            visitorData?.let { addProperty("visitorData", it) }
+            currentVisitorData?.let { addProperty("visitorData", it) }
         }
-        return JsonObject().apply { add("client", client) }
+        val res = JsonObject().apply { add("client", client) }
+        cachedAndroidContext = res
+        lastVisitorDataAndroid = currentVisitorData
+        return res.deepCopy()
     }
 
-    // ========== User Agents ==========
+    // ========== User Agents & Clients ==========
 
-    // Optimized with Zion's explicit compatibility strings
-    private const val WEB_REMIX_UA = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-    private const val ANDROID_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
-    private const val IOS_UA = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)"
+    const val USER_AGENT_WEB_REMIX = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
+    const val USER_AGENT_WEB = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    const val USER_AGENT_ANDROID = "com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip"
+    const val USER_AGENT_IOS = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)"
 
-    // Restored standard public API key to authorize logged-in requests and bypass Gateway 400 failures
+    // Standard public API keys: YouTube Music key & YouTube Main key (Player key)
     private const val INNER_TUBE_API_KEY = "AIzaSyAO_JVGg4tq4r2T5Co2t8G3oG1d1dQ"
+    private const val YOUTUBE_API_KEY = "AIzaSyDyT5W0Jh49F30Pqqtyfdf7pDLFKLJoAnw"
 
     // ========== Cookie / Auth ==========
 
@@ -138,66 +183,144 @@ object InnerTubeClient {
     var visitorData: String? = null
 
 
-    internal fun buildHeaders(clientType: ClientType, isYoutube: Boolean = false): Map<String, String> {
-        val headers = mutableMapOf<String, String>()
-        headers["Content-Type"] = JSON_MEDIA_TYPE
-        headers["Accept-Language"] = "${Locale.getDefault().language},en;q=0.9"
-        headers["X-Goog-Api-Format-Version"] = "1"
-        if (isYoutube) {
-            headers["X-Origin"] = "https://www.youtube.com"
-            headers["Origin"] = "https://www.youtube.com"
-            headers["Referer"] = "https://www.youtube.com/"
-        } else {
-            headers["X-Origin"] = "https://music.youtube.com"
-            headers["Origin"] = "https://music.youtube.com"
-            headers["Referer"] = "https://music.youtube.com/"
-        }
+    /**
+     * Injects InnerTube headers directly into Request.Builder without allocating intermediate Map or Entry objects.
+     */
+    fun applyHeaders(builder: Request.Builder, clientType: ClientType, isYoutube: Boolean = false) {
+        builder.header("Content-Type", JSON_MEDIA_TYPE)
+        builder.header("Accept-Language", "${Locale.getDefault().language},en;q=0.9")
+        builder.header("X-Goog-Api-Format-Version", "1")
 
-        // Zion Signature: Explicit Internal Numeric IDs mapped into X-YouTube-Client-Name header!
         when (clientType) {
             ClientType.WEB_REMIX -> {
-                headers["User-Agent"] = WEB_REMIX_UA
-                headers["X-YouTube-Client-Name"] = "67"
-                headers["X-YouTube-Client-Version"] = "1.20260531.05.00"
+                builder.header("User-Agent", USER_AGENT_WEB_REMIX)
+                builder.header("X-YouTube-Client-Name", "67")
+                builder.header("X-YouTube-Client-Version", "1.20241118.01.00")
+                builder.header("X-Origin", "https://music.youtube.com")
+                builder.header("Origin", "https://music.youtube.com")
+                builder.header("Referer", "https://music.youtube.com/")
             }
             ClientType.WEB -> {
-                headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                headers["X-YouTube-Client-Name"] = "1"
-                headers["X-YouTube-Client-Version"] = "2.20250310.01.00"
+                builder.header("User-Agent", USER_AGENT_WEB)
+                builder.header("X-YouTube-Client-Name", "1")
+                builder.header("X-YouTube-Client-Version", "2.20241118.01.00")
+                builder.header("X-Origin", "https://www.youtube.com")
+                builder.header("Origin", "https://www.youtube.com")
+                builder.header("Referer", "https://www.youtube.com/")
             }
-            ClientType.ANDROID -> {
-                headers["User-Agent"] = ANDROID_UA
-                headers["X-YouTube-Client-Name"] = "3"
-                headers["X-YouTube-Client-Version"] = "20.10.38"
+            ClientType.ANDROID_VR -> {
+                builder.header("User-Agent", com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_ANDROID_VR)
+                builder.header("X-YouTube-Client-Name", "28")
+                builder.header("X-YouTube-Client-Version", "1.65.10")
             }
             ClientType.IOS -> {
-                headers["User-Agent"] = IOS_UA
-                headers["X-YouTube-Client-Name"] = "5"
-                headers["X-YouTube-Client-Version"] = "20.10.4"
+                builder.header("User-Agent", USER_AGENT_IOS)
+                builder.header("X-YouTube-Client-Name", "5")
+                builder.header("X-YouTube-Client-Version", "19.29.1")
+            }
+            ClientType.VISIONOS -> {
+                builder.header("User-Agent", com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_VISIONOS)
+                builder.header("X-YouTube-Client-Name", "102")
+                builder.header("X-YouTube-Client-Version", "1.2.1")
+            }
+            ClientType.TVHTML5 -> {
+                builder.header("User-Agent", com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_TVHTML5)
+                builder.header("X-YouTube-Client-Name", "85")
+                builder.header("X-YouTube-Client-Version", "7.20241118.11.00")
+                builder.header("X-Origin", "https://www.youtube.com")
+                builder.header("Origin", "https://www.youtube.com")
+                builder.header("Referer", "https://www.youtube.com/tv")
+            }
+            ClientType.MWEB -> {
+                builder.header("User-Agent", com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_MWEB)
+                builder.header("X-YouTube-Client-Name", "2")
+                builder.header("X-YouTube-Client-Version", "2.20241118.01.00")
+                builder.header("X-Origin", "https://m.youtube.com")
+                builder.header("Origin", "https://m.youtube.com")
+                builder.header("Referer", "https://m.youtube.com/")
+            }
+            ClientType.ANDROID -> {
+                builder.header("User-Agent", USER_AGENT_ANDROID)
+                builder.header("X-YouTube-Client-Name", "3")
+                builder.header("X-YouTube-Client-Version", "20.10.38")
             }
         }
 
-        // Only WEB and WEB_REMIX clients support Cookie/SAPISIDHASH authentication.
-        // Mobile clients (ANDROID, IOS) expect OAuth Bearer tokens, and reject SAPISIDHASH with HTTP 400.
         if (clientType == ClientType.WEB_REMIX || clientType == ClientType.WEB) {
             cookie?.let { rawCookie ->
-                headers["Cookie"] = rawCookie
-                // Important: Logged-in InnerTube demands the authorization signature hash 
-                val cookieMap = parseCookieMap(rawCookie)
-                val sapisid = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+                builder.header("Cookie", rawCookie)
+                val sapisid = getSapisid(rawCookie)
                 if (sapisid != null) {
-                    val timestamp = System.currentTimeMillis() / 1000
                     val origin = if (isYoutube) "https://www.youtube.com" else "https://music.youtube.com"
-                    val hashInput = "$timestamp $sapisid $origin"
-                    val hash = sha1(hashInput)
-                    headers["Authorization"] = "SAPISIDHASH ${timestamp}_$hash"
+                    builder.header("Authorization", getSapisidAuthHeader(sapisid, origin))
                 }
             }
         }
 
-        visitorData?.let { headers["X-Goog-Visitor-Id"] = it }
+        visitorData?.let { builder.header("X-Goog-Visitor-Id", it) }
+    }
 
-        return headers
+    internal fun buildHeaders(clientType: ClientType, isYoutube: Boolean = false): Map<String, String> {
+        val dummy = Request.Builder().url("https://music.youtube.com")
+        applyHeaders(dummy, clientType, isYoutube)
+        val headers = dummy.build().headers
+        val map = HashMap<String, String>(headers.size)
+        for (i in 0 until headers.size) {
+            map[headers.name(i)] = headers.value(i)
+        }
+        return map
+    }
+
+    @Volatile
+    private var lastRawCookie: String? = null
+    @Volatile
+    private var cachedSapisid: String? = null
+
+    private fun extractCookieValue(cookie: String, name: String): String? {
+        var startIdx = 0
+        while (startIdx < cookie.length) {
+            val nameIdx = cookie.indexOf(name, startIdx)
+            if (nameIdx == -1) return null
+            val isValidStart = nameIdx == 0 || cookie[nameIdx - 1] == ' ' || cookie[nameIdx - 1] == ';'
+            val equalsIdx = nameIdx + name.length
+            if (isValidStart && equalsIdx < cookie.length && cookie[equalsIdx] == '=') {
+                val valueStart = equalsIdx + 1
+                val semiIdx = cookie.indexOf(';', valueStart)
+                val valueEnd = if (semiIdx != -1) semiIdx else cookie.length
+                return cookie.substring(valueStart, valueEnd).trim()
+            }
+            startIdx = nameIdx + 1
+        }
+        return null
+    }
+
+    private fun getSapisid(rawCookie: String): String? {
+        if (rawCookie == lastRawCookie) return cachedSapisid
+        val sapisid = extractCookieValue(rawCookie, "SAPISID")
+            ?: extractCookieValue(rawCookie, "__Secure-3PAPISID")
+        lastRawCookie = rawCookie
+        cachedSapisid = sapisid
+        return sapisid
+    }
+
+    @Volatile
+    private var lastSapisidHashTimestamp: Long = 0
+    @Volatile
+    private var lastSapisidAuthHeader: Pair<String, String>? = null
+
+    private fun getSapisidAuthHeader(sapisid: String, origin: String): String {
+        val nowSec = System.currentTimeMillis() / 1000
+        val cacheKey = "$origin:$sapisid"
+        val cached = lastSapisidAuthHeader
+        if (cached != null && cached.first == cacheKey && (nowSec - lastSapisidHashTimestamp) < 60) {
+            return cached.second
+        }
+        val hashInput = "$nowSec $sapisid $origin"
+        val hash = sha1(hashInput)
+        val headerVal = "SAPISIDHASH ${nowSec}_$hash"
+        lastSapisidHashTimestamp = nowSec
+        lastSapisidAuthHeader = Pair(cacheKey, headerVal)
+        return headerVal
     }
 
 
@@ -286,7 +409,7 @@ object InnerTubeClient {
             // Add playbackContext containing signatureTimestamp to prevent HTTP 400/403
             val sigTimestamp = try {
                 org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId)
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 null
             }
             sigTimestamp?.let { timestamp ->
@@ -302,64 +425,237 @@ object InnerTubeClient {
         post("$BASE_URL/player", body, ClientType.WEB_REMIX)
     }
 
+    private val clientScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    @Volatile
+    private var cachedSigTimestampPair: Pair<Int, Long>? = null
+
+    fun getCachedSignatureTimestamp(videoId: String? = null): Int? {
+        val current = cachedSigTimestampPair
+        if (current != null && System.currentTimeMillis() < current.second) {
+            return current.first
+        }
+        // Asynchronously fetch/refresh signature timestamp in background without blocking player()
+        if (videoId != null) {
+            clientScope.launch {
+                try {
+                    val fetched = org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId)
+                    if (fetched > 0) {
+                        cachedSigTimestampPair = Pair(fetched, System.currentTimeMillis() + 86_400_000L)
+                    }
+                } catch (_: Throwable) {}
+            }
+        }
+        return current?.first
+    }
+
+    private const val FAILED_CLIENT_BACKOFF_MS = 10 * 60 * 1000L // 10 minutes backoff
+    private val failedStreamClientsUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun markStreamClientFailed(videoId: String, clientName: String) {
+        if (failedStreamClientsUntil.size > 100) {
+            val now = System.currentTimeMillis()
+            failedStreamClientsUntil.entries.removeIf { it.value <= now }
+        }
+        val key = "$videoId:${clientName.uppercase()}"
+        failedStreamClientsUntil[key] = System.currentTimeMillis() + FAILED_CLIENT_BACKOFF_MS
+        com.codetrio.spatialflow.util.ConsoleLogger.client("Client $clientName temporarily blacklisted for $videoId after failure")
+    }
+
+    fun isStreamClientBlocked(videoId: String, clientName: String): Boolean {
+        val key = "$videoId:${clientName.uppercase()}"
+        val until = failedStreamClientsUntil[key] ?: return false
+        if (until <= System.currentTimeMillis()) {
+            failedStreamClientsUntil.remove(key)
+            return false
+        }
+        return true
+    }
+
     /**
      * Player endpoint — get streaming data for a video.
-     * Optimized sequence derived from ViMusic: pure ANDROID core -> IOS core fallback.
-     * Fully authenticated via Zion headers to prevent HTTP 400 / LOGIN_REQUIRED cascades.
+     * Sequences: standard ANDROID core -> IOS core fallback -> WEB_REMIX fallback.
      */
     suspend fun player(videoId: String?, playlistId: String? = null): JsonObject = withContext(Dispatchers.IO) {
         if (videoId == null) return@withContext JsonObject()
 
-        // Attempt 1: Standard YouTube ANDROID Client (Bypasses "Music" sign-in blocks)
-        // CRITICAL: Dynamically fetch matching signature timestamp to pair with the cipher engine!
-        val sigTimestamp = try {
-            org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager.getSignatureTimestamp(videoId)
-        } catch (_: Exception) { null }
+        val sigTimestamp = getCachedSignatureTimestamp(videoId)
+        val (prefQuality, prefDataSaver, prefForceOpus) = NewPipeStreamExtractor.getPreferencesSnapshot()
+        val preferOpus = prefForceOpus || prefQuality.equals("High", ignoreCase = true) || prefQuality.equals("Highest", ignoreCase = true)
 
-        val androidResult = playerWithClient(
-            videoId, playlistId,
-            clientType = ClientType.ANDROID,
-            clientName = "ANDROID", clientVersion = "20.10.38",
-            userAgent = ANDROID_UA,
-            baseUrl = YOUTUBE_BASE_URL,
-            signatureTimestamp = sigTimestamp,
-            extraContext = { ctx ->
-                ctx.addProperty("androidSdkVersion", 30)
-                ctx.addProperty("osName", "Android")
-                ctx.addProperty("osVersion", "11")
-                ctx.addProperty("platform", "MOBILE")
+        var cipherFallbackResult: JsonObject? = null
+
+        // Client execution helpers
+        suspend fun tryAndroidVr(): JsonObject? {
+            if (isStreamClientBlocked(videoId, "ANDROID_VR")) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Skipping ANDROID_VR for $videoId (temporarily blocked)")
+                return null
             }
-        )
-        if (isPlayerResponseValid(androidResult)) {
-            Log.d(TAG, "Player success with native ANDROID core client")
-            return@withContext androidResult
-        }
-        logPlayerFailure("ANDROID", androidResult)
-
-        // Attempt 2: Modern IOS core fallback
-        val iosResult = playerWithClient(
-            videoId, playlistId,
-            clientType = ClientType.IOS,
-            clientName = "IOS", clientVersion = "20.10.4",
-            userAgent = IOS_UA,
-            baseUrl = YOUTUBE_BASE_URL,
-            signatureTimestamp = sigTimestamp, // Pass to iOS too for resilience
-            extraContext = { ctx ->
-                ctx.addProperty("deviceMake", "Apple")
-                ctx.addProperty("deviceModel", "iPhone16,2")
-                ctx.addProperty("osName", "iPhone")
-                ctx.addProperty("osVersion", "18.3.2.22D82")
-                ctx.addProperty("platform", "MOBILE")
+            val res = playerWithClient(
+                videoId, playlistId,
+                clientType = ClientType.ANDROID_VR,
+                clientName = "ANDROID_VR", clientVersion = "1.65.10",
+                userAgent = com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_ANDROID_VR,
+                baseUrl = YOUTUBE_BASE_URL,
+                signatureTimestamp = sigTimestamp,
+                extraContext = { ctx ->
+                    ctx.addProperty("deviceMake", "Oculus")
+                    ctx.addProperty("deviceModel", "Quest 3")
+                    ctx.addProperty("osName", "Android")
+                    ctx.addProperty("osVersion", "12L")
+                    ctx.addProperty("platform", "MOBILE")
+                    ctx.addProperty("androidSdkVersion", 32)
+                }
+            )
+            if (hasDirectAudio(res)) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Direct OPUS/audio acquired via ANDROID_VR ($videoId)")
+                return res
             }
-        )
-        if (isPlayerResponseValid(iosResult)) {
-            Log.d(TAG, "Player success with native IOS core client")
-            return@withContext iosResult
+            if (isPlayerResponseValid(res) && cipherFallbackResult == null) cipherFallbackResult = res
+            return null
         }
-        logPlayerFailure("IOS", iosResult)
 
-        Log.w(TAG, "Native InnerTube direct streams failing. Returning original payload for ultimate NewPipe fallback handling.")
-        return@withContext if (androidResult.entrySet().isNotEmpty()) androidResult else iosResult
+        suspend fun tryVisionOs(): JsonObject? {
+            if (isStreamClientBlocked(videoId, "VISIONOS")) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Skipping VISIONOS for $videoId (temporarily blocked)")
+                return null
+            }
+            val res = playerWithClient(
+                videoId, playlistId,
+                clientType = ClientType.VISIONOS,
+                clientName = "VISIONOS", clientVersion = "1.2.1",
+                userAgent = com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_VISIONOS,
+                baseUrl = YOUTUBE_BASE_URL,
+                signatureTimestamp = sigTimestamp,
+                extraContext = { ctx ->
+                    ctx.addProperty("deviceMake", "Apple")
+                    ctx.addProperty("deviceModel", "Apple Vision Pro")
+                    ctx.addProperty("osName", "visionOS")
+                    ctx.addProperty("osVersion", "1.2.1")
+                    ctx.addProperty("platform", "VISION")
+                }
+            )
+            if (hasDirectAudio(res)) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Direct audio acquired via VISIONOS ($videoId)")
+                return res
+            }
+            if (isPlayerResponseValid(res) && cipherFallbackResult == null) cipherFallbackResult = res
+            return null
+        }
+
+        suspend fun tryIos(): JsonObject? {
+            if (isStreamClientBlocked(videoId, "IOS")) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Skipping IOS for $videoId (temporarily blocked)")
+                return null
+            }
+            val res = playerWithClient(
+                videoId, playlistId,
+                clientType = ClientType.IOS,
+                clientName = "IOS", clientVersion = "19.29.1",
+                userAgent = USER_AGENT_IOS,
+                baseUrl = YOUTUBE_BASE_URL,
+                signatureTimestamp = sigTimestamp,
+                extraContext = { ctx ->
+                    ctx.addProperty("deviceMake", "Apple")
+                    ctx.addProperty("deviceModel", "iPhone16,2")
+                    ctx.addProperty("osName", "iPhone")
+                    ctx.addProperty("osVersion", "17.5.1.21F90")
+                    ctx.addProperty("platform", "MOBILE")
+                }
+            )
+            if (hasDirectAudio(res)) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Direct AAC acquired via IOS ($videoId)")
+                return res
+            }
+            if (isPlayerResponseValid(res) && cipherFallbackResult == null) cipherFallbackResult = res
+            return null
+        }
+
+        suspend fun tryWebRemix(): JsonObject? {
+            if (isStreamClientBlocked(videoId, "WEB_REMIX")) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Skipping WEB_REMIX for $videoId (temporarily blocked)")
+                return null
+            }
+            val res = playerWithClient(
+                videoId, playlistId,
+                clientType = ClientType.WEB_REMIX,
+                clientName = "WEB_REMIX", clientVersion = "1.20241118.01.00",
+                userAgent = USER_AGENT_WEB_REMIX,
+                baseUrl = BASE_URL,
+                signatureTimestamp = sigTimestamp
+            )
+            if (hasDirectAudio(res)) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Direct audio acquired via WEB_REMIX ($videoId)")
+                return res
+            }
+            if (isPlayerResponseValid(res) && cipherFallbackResult == null) cipherFallbackResult = res
+            return null
+        }
+
+        suspend fun tryTvHtml5(): JsonObject? {
+            if (isStreamClientBlocked(videoId, "TVHTML5")) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Skipping TVHTML5 for $videoId (temporarily blocked)")
+                return null
+            }
+            val res = playerWithClient(
+                videoId, playlistId,
+                clientType = ClientType.TVHTML5,
+                clientName = "TVHTML5", clientVersion = "7.20241118.11.00",
+                userAgent = com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_TVHTML5,
+                baseUrl = YOUTUBE_BASE_URL,
+                signatureTimestamp = sigTimestamp
+            )
+            if (hasDirectAudio(res)) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Direct audio acquired via TVHTML5 ($videoId)")
+                return res
+            }
+            if (isPlayerResponseValid(res) && cipherFallbackResult == null) cipherFallbackResult = res
+            return null
+        }
+
+        suspend fun tryMWeb(): JsonObject? {
+            if (isStreamClientBlocked(videoId, "MWEB")) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Skipping MWEB for $videoId (temporarily blocked)")
+                return null
+            }
+            val res = playerWithClient(
+                videoId, playlistId,
+                clientType = ClientType.MWEB,
+                clientName = "MWEB", clientVersion = "2.20241118.01.00",
+                userAgent = com.codetrio.spatialflow.util.StreamClientUtils.USER_AGENT_MWEB,
+                baseUrl = YOUTUBE_BASE_URL,
+                signatureTimestamp = sigTimestamp
+            )
+            if (hasDirectAudio(res)) {
+                com.codetrio.spatialflow.util.ConsoleLogger.client("Direct audio acquired via MWEB ($videoId)")
+                return res
+            }
+            if (isPlayerResponseValid(res) && cipherFallbackResult == null) cipherFallbackResult = res
+            return null
+        }
+
+        // Execution hierarchy for STREAM_FALLBACK_CLIENTS:
+        // Priority 1: VISIONOS (direct un-ciphered Opus/AAC without bot-guard friction)
+        // Priority 2: ANDROID_VR (direct Opus 160k with client ID 28)
+        // Priority 3: IOS (direct pristine AAC 256k/128k)
+        // Priority 4: TVHTML5 / MWEB
+        val directResult = if (preferOpus) {
+            tryVisionOs() ?: tryAndroidVr() ?: tryIos() ?: tryTvHtml5() ?: tryMWeb()
+        } else {
+            tryVisionOs() ?: tryIos() ?: tryAndroidVr() ?: tryTvHtml5() ?: tryMWeb()
+        }
+
+        if (directResult != null) {
+            return@withContext directResult
+        }
+
+        if (cipherFallbackResult != null) {
+            com.codetrio.spatialflow.util.ConsoleLogger.client("No direct audio found, falling back to ciphered player response ($videoId)")
+            return@withContext cipherFallbackResult
+        }
+
+        com.codetrio.spatialflow.util.ConsoleLogger.client("All clients exhausted for $videoId")
+        return@withContext JsonObject()
     }
 
     private suspend fun OkHttpClient.executeSuspended(request: Request): okhttp3.Response =
@@ -399,6 +695,7 @@ object InnerTubeClient {
         userAgent: String,
         baseUrl: String,
         signatureTimestamp: Int? = null,
+        extraBody: (JsonObject) -> Unit = {},
         extraContext: (JsonObject) -> Unit = {}
     ): JsonObject = withContext(Dispatchers.IO) {
         val clientContext = JsonObject().apply {
@@ -428,37 +725,38 @@ object InnerTubeClient {
                 }
                 add("playbackContext", playbackCtx)
             }
+            extraBody(this)
         }
 
-        val mediaType = JSON_MEDIA_TYPE.toMediaType()
-        val requestBody = gson.toJson(body).toRequestBody(mediaType)
+        val requestBody = gson.toJson(body).toRequestBody(JSON_MEDIA_TYPE_OBJ)
 
-        // CRITICAL FIX: Load ALL custom Zion headers established in buildHeaders!
-        val headerMap = buildHeaders(clientType)
+        val isYoutube = baseUrl.contains("www.youtube.com")
+        val apiKey = if (isYoutube) YOUTUBE_API_KEY else INNER_TUBE_API_KEY
 
         val request = Request.Builder()
-            .url("$baseUrl/player?prettyPrint=false")
+            .url("$baseUrl/player?key=$apiKey&prettyPrint=false")
             .post(requestBody)
             .apply {
-                headerMap.forEach { (k, v) -> header(k, v) }
-                // Explicitly override/set these to match Zion exactly
+                applyHeaders(this, clientType, isYoutube)
                 header("User-Agent", userAgent)
-                cookie?.let { header("Cookie", it) }
                 visitorData?.let { header("X-Goog-Visitor-Id", it) }
+                cookie?.let { header("Cookie", it) }
             }
             .build()
 
         return@withContext try {
-            val response = httpClient.executeSuspended(request)
-            val responseBody = response.body.string()
-            if (!response.isSuccessful) {
-                Log.w(TAG, "Player $clientName HTTP ${response.code}")
-                JsonObject()
-            } else {
-                JsonParser.parseString(responseBody).asJsonObject
+            httpClient.executeSuspended(request).use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "Player $clientName HTTP ${response.code}")
+                    JsonObject()
+                } else {
+                    response.body.charStream().use { reader ->
+                        JsonParser.parseReader(reader).asJsonObject
+                    }
+                }
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "Player $clientName failed: ${e.message}")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Player $clientName failed: ${t.message}")
             JsonObject()
         }
     }
@@ -466,13 +764,59 @@ object InnerTubeClient {
 
     // ========== Validation ==========
 
+    fun isFormatPlayable(format: JsonObject): Boolean {
+        val hasDirectUrl = format.has("url") && !format.get("url").asString.isNullOrEmpty()
+        val hasCipher = format.has("signatureCipher") || format.has("cipher")
+        return hasDirectUrl || hasCipher
+    }
+
+    private inline fun anyFormat(
+        adaptive: com.google.gson.JsonArray?,
+        formats: com.google.gson.JsonArray?,
+        predicate: (JsonObject) -> Boolean
+    ): Boolean {
+        if (adaptive != null) {
+            val size = adaptive.size()
+            for (i in 0 until size) {
+                val elem = adaptive.get(i)
+                if (elem.isJsonObject && predicate(elem.asJsonObject)) return true
+            }
+        }
+        if (formats != null) {
+            val size = formats.size()
+            for (i in 0 until size) {
+                val elem = formats.get(i)
+                if (elem.isJsonObject && predicate(elem.asJsonObject)) return true
+            }
+        }
+        return false
+    }
+
+    fun hasDirectAudio(response: JsonObject?): Boolean {
+        if (response == null || response.size() == 0) return false
+        val playability = response.getAsJsonObject("playabilityStatus") ?: return false
+        if (playability.get("status")?.asString != "OK") return false
+        val streamingData = response.getAsJsonObject("streamingData") ?: return false
+        val adaptive = streamingData.getAsJsonArray("adaptiveFormats")
+        val formats = streamingData.getAsJsonArray("formats")
+        return anyFormat(adaptive, formats) { format ->
+            val mime = format.get("mimeType")?.asString ?: ""
+            (mime.startsWith("audio/") || mime.contains("mp4a", ignoreCase = true)) &&
+            format.has("url") && !format.get("url").asString.isNullOrEmpty()
+        }
+    }
+
     private fun isPlayerResponseValid(response: JsonObject): Boolean {
-        if (response.entrySet().isEmpty()) return false
-        val status = response.getAsJsonObject("playabilityStatus")?.get("status")?.asString
-        val streamingData = response.getAsJsonObject("streamingData")
-        val hasAdaptive = streamingData?.has("adaptiveFormats") == true
-        val hasFormats = streamingData?.has("formats") == true
-        return status == "OK" && (hasAdaptive || hasFormats)
+        if (response.size() == 0) return false
+        val playability = response.getAsJsonObject("playabilityStatus") ?: return false
+        if (playability.get("status")?.asString != "OK") return false
+        val streamingData = response.getAsJsonObject("streamingData") ?: return false
+        val adaptive = streamingData.getAsJsonArray("adaptiveFormats")
+        val formats = streamingData.getAsJsonArray("formats")
+        return anyFormat(adaptive, formats) { format ->
+            val mime = format.get("mimeType")?.asString ?: ""
+            (mime.startsWith("audio/") || mime.startsWith("video/")) && isFormatPlayable(format)
+        }
     }
 
     private fun logPlayerFailure(clientName: String, response: JsonObject) {
@@ -553,41 +897,40 @@ object InnerTubeClient {
     // ========== HTTP Layer ==========
  
     private suspend fun post(url: String, body: JsonObject, clientType: ClientType): JsonObject = withContext(Dispatchers.IO) {
-        val mediaType = JSON_MEDIA_TYPE.toMediaType()
-        val requestBody = gson.toJson(body).toRequestBody(mediaType)
- 
+        val requestBody = gson.toJson(body).toRequestBody(JSON_MEDIA_TYPE_OBJ)
+
+        val separator = if (url.contains("?")) "&" else "?"
         val requestBuilder = Request.Builder()
-            .url("$url?key=$INNER_TUBE_API_KEY&prettyPrint=false")
+            .url("$url${separator}key=$INNER_TUBE_API_KEY&prettyPrint=false")
             .post(requestBody)
- 
+
         val isYoutube = url.contains("www.youtube.com")
-        buildHeaders(clientType, isYoutube).forEach { (key, value) ->
-            requestBuilder.header(key, value)
-        }
- 
+        applyHeaders(requestBuilder, clientType, isYoutube)
+
         val request = requestBuilder.build()
- 
+
         return@withContext try {
-            val response = httpClient.executeSuspended(request)
-            val responseBody = response.body.string()
- 
-            if (!response.isSuccessful) {
-                Log.w(TAG, "HTTP ${response.code} for $url [${clientType.name}] (skipping response body parsing)")
-                JsonObject()
-            } else {
-                val parsed = JsonParser.parseString(responseBody).asJsonObject
-                // Extract visitor data from response if available
-                parsed.getAsJsonObject("responseContext")
-                    ?.get("visitorData")?.asString?.let {
-                        if (visitorData == null) {
-                            visitorData = it
-                            Log.d(TAG, "Got visitor data from response")
-                        }
+            httpClient.executeSuspended(request).use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "HTTP ${response.code} for $url [${clientType.name}] (skipping response body parsing)")
+                    JsonObject()
+                } else {
+                    val parsed = response.body.charStream().use { reader ->
+                        JsonParser.parseReader(reader).asJsonObject
                     }
-                parsed
+                    // Extract visitor data from response if available
+                    parsed.getAsJsonObject("responseContext")
+                        ?.get("visitorData")?.asString?.let {
+                            if (visitorData == null) {
+                                visitorData = it
+                                Log.d(TAG, "Got visitor data from response")
+                            }
+                        }
+                    parsed
+                }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Request failed [${clientType.name}]: ${e.message}", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Request failed [${clientType.name}]: ${t.message}", t)
             JsonObject()
         }
     }
@@ -675,9 +1018,10 @@ object InnerTubeClient {
      * Delete a playlist from the user's YouTube Music library.
      */
     suspend fun deletePlaylist(playlistId: String): JsonObject = withContext(Dispatchers.IO) {
+        val cleanPlaylistId = playlistId.removePrefix("VL")
         val body = JsonObject().apply {
             add("context", webRemixContext())
-            addProperty("playlistId", playlistId)
+            addProperty("playlistId", cleanPlaylistId)
         }
         post("$BASE_URL/playlist/delete", body, ClientType.WEB_REMIX)
     }
@@ -686,6 +1030,7 @@ object InnerTubeClient {
      * Add songs to an existing playlist on YouTube Music.
      */
     suspend fun addToPlaylist(playlistId: String, videoIds: List<String>): JsonObject = withContext(Dispatchers.IO) {
+        val cleanPlaylistId = playlistId.removePrefix("VL")
         val actions = com.google.gson.JsonArray()
         videoIds.forEach { videoId ->
             val action = JsonObject().apply {
@@ -696,7 +1041,66 @@ object InnerTubeClient {
         }
         val body = JsonObject().apply {
             add("context", webRemixContext())
-            addProperty("playlistId", playlistId)
+            addProperty("playlistId", cleanPlaylistId)
+            add("actions", actions)
+        }
+        post("$BASE_URL/browse/edit_playlist", body, ClientType.WEB_REMIX)
+    }
+
+    /**
+     * Remove a song from a YouTube Music playlist.
+     */
+    suspend fun removeFromPlaylist(playlistId: String, videoId: String, setVideoId: String): JsonObject = withContext(Dispatchers.IO) {
+        val cleanPlaylistId = playlistId.removePrefix("VL")
+        val actions = com.google.gson.JsonArray().apply {
+            add(JsonObject().apply {
+                addProperty("action", "ACTION_REMOVE_VIDEO")
+                addProperty("setVideoId", setVideoId)
+                addProperty("removedVideoId", videoId)
+            })
+        }
+        val body = JsonObject().apply {
+            add("context", webRemixContext())
+            addProperty("playlistId", cleanPlaylistId)
+            add("actions", actions)
+        }
+        post("$BASE_URL/browse/edit_playlist", body, ClientType.WEB_REMIX)
+    }
+
+    /**
+     * Rename a YouTube Music playlist.
+     */
+    suspend fun renamePlaylist(playlistId: String, newName: String): JsonObject = withContext(Dispatchers.IO) {
+        val cleanPlaylistId = playlistId.removePrefix("VL")
+        val actions = com.google.gson.JsonArray().apply {
+            add(JsonObject().apply {
+                addProperty("action", "ACTION_SET_PLAYLIST_NAME")
+                addProperty("playlistName", newName)
+            })
+        }
+        val body = JsonObject().apply {
+            add("context", webRemixContext())
+            addProperty("playlistId", cleanPlaylistId)
+            add("actions", actions)
+        }
+        post("$BASE_URL/browse/edit_playlist", body, ClientType.WEB_REMIX)
+    }
+
+    /**
+     * Move a song within a YouTube Music playlist.
+     */
+    suspend fun moveVideoInPlaylist(playlistId: String, setVideoId: String, successorSetVideoId: String?): JsonObject = withContext(Dispatchers.IO) {
+        val cleanPlaylistId = playlistId.removePrefix("VL")
+        val actions = com.google.gson.JsonArray().apply {
+            add(JsonObject().apply {
+                addProperty("action", "ACTION_MOVE_VIDEO_BEFORE")
+                addProperty("setVideoId", setVideoId)
+                successorSetVideoId?.let { addProperty("movedSetVideoIdSuccessor", it) }
+            })
+        }
+        val body = JsonObject().apply {
+            add("context", webRemixContext())
+            addProperty("playlistId", cleanPlaylistId)
             add("actions", actions)
         }
         post("$BASE_URL/browse/edit_playlist", body, ClientType.WEB_REMIX)
@@ -728,23 +1132,28 @@ object InnerTubeClient {
         post("$BASE_URL/subscription/unsubscribe", body, ClientType.WEB_REMIX)
     }
 
-    private fun parseCookieMap(cookie: String): Map<String, String> {
-        return cookie.split(";").mapNotNull {
-            val parts = it.split("=", limit = 2)
-            if (parts.size == 2) parts[0].trim() to parts[1].trim() else null
-        }.toMap()
-    }
+    private val HEX_CHARS = "0123456789abcdef".toCharArray()
 
     private fun sha1(input: String): String {
         val md = java.security.MessageDigest.getInstance("SHA-1")
-        val bytes = md.digest(input.toByteArray())
-        return bytes.joinToString("") { "%02x".format(it) }
+        val bytes = md.digest(input.toByteArray(Charsets.UTF_8))
+        val result = CharArray(bytes.size * 2)
+        for (i in bytes.indices) {
+            val v = bytes[i].toInt() and 0xFF
+            result[i * 2] = HEX_CHARS[v ushr 4]
+            result[i * 2 + 1] = HEX_CHARS[v and 0x0F]
+        }
+        return String(result)
     }
 
     enum class ClientType {
         WEB_REMIX,
         WEB,
+        MWEB,
         IOS,
-        ANDROID
+        ANDROID,
+        ANDROID_VR,
+        VISIONOS,
+        TVHTML5
     }
 }

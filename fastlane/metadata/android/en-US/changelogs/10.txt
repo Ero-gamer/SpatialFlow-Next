@@ -1,0 +1,10 @@
+v1.8.2 Release Highlights:
+* Enhanced dynamic Karaoke lyrics with smooth background vocal entry, sweeping, and exit animations
+* Fixed local songs album cover bleed with track-isolated embedded artwork decoding
+* Added Player Options BottomSheet with real-time artwork swipe toggle
+* Added dynamic bitrate badge in the full player
+* Enhanced custom lyrics synchronization & fallback handling
+* Added community contributor profiles to the About section
+* Hardened GitHub update manager with resilient APK URL resolution
+* Improved audio engine stability and eliminated playback stutter on track changes
+* Fixed Android 14/15 edge-to-edge system bars padding

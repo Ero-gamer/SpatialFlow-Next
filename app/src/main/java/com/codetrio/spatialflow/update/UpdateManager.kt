@@ -30,7 +30,32 @@ class UpdateManager(private val context: Context) {
     // -----------------------------------------------------
     // CHECK FOR UPDATE
     // -----------------------------------------------------
+    fun isInstalledFromFdroid(): Boolean {
+        return try {
+            val installer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getInstallerPackageName(context.packageName)
+            }
+            installer in listOf(
+                "org.fdroid.fdroid",
+                "org.fdroid.fdroid.privileged",
+                "com.looker.droidify",
+                "com.machiav3lli.fdroid",
+                "org.neo.store"
+            )
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     fun checkForUpdate(rootView: View, currentVersion: String) {
+        if (isInstalledFromFdroid()) {
+            showSnackbarAnchored(rootView, "Updates are handled by F-Droid", Snackbar.LENGTH_LONG)
+            return
+        }
+
         showSnackbarAnchored(rootView, "Checking for updates...", Snackbar.LENGTH_SHORT)
 
         Thread {
@@ -93,12 +118,24 @@ class UpdateManager(private val context: Context) {
                 return -1L
             }
 
+            val filename = "SpatialFlow-update.apk"
+            try {
+                val dir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                if (dir != null) {
+                    val existingFile = java.io.File(dir, filename)
+                    if (existingFile.exists()) {
+                        existingFile.delete()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to clean old update file before download", e)
+            }
+
             val uri = Uri.parse(apkUrl)
             val request = DownloadManager.Request(uri).apply {
                 setTitle("SpatialFlow Update")
                 setDescription("Downloading latest version...")
                 setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                val filename = "SpatialFlow-update.apk"
                 setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, filename)
             }
 

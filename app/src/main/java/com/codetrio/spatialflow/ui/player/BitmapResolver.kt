@@ -5,9 +5,10 @@ import android.graphics.Bitmap
 /**
  * Utilities for compressing bitmaps before palette extraction or background rendering.
  *
- * Center-crops to a square, scales to a small pixel size, then converts to RGB_565
- * (half the memory of ARGB_8888). This turns a 3000×3000 cover image into a
- * 64×64 thumbnail in ~5 ms instead of ~100 ms, making Palette.from() very fast.
+ * Center-crops to a square, scales to a small pixel size, then converts to ARGB_8888
+ * to support transparent regions and prevent color distortion glitches. This turns a
+ * 3000×3000 cover image into a 64×64 thumbnail in ~5 ms instead of ~100 ms, keeping
+ * memory usage low (~16-36 KB) and making Palette.from() very fast.
  *
  * Mirrors BitmapResolver.bitmapCompress() from the design spec.
  *
@@ -45,7 +46,7 @@ object BitmapResolver {
             compressedBitmap = Bitmap.createScaledBitmap(squareBitmap, scaledSize, scaledSize, true)
         }
 
-        // 3 — Convert to RGB_565: halves memory vs ARGB_8888
-        return compressedBitmap.copy(Bitmap.Config.RGB_565, false)
+        // 3 — Convert to ARGB_8888 to fully support transparency/alpha channel
+        return compressedBitmap.copy(Bitmap.Config.ARGB_8888, false)
     }
 }

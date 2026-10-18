@@ -45,6 +45,10 @@
 -keepattributes *Annotation*
 -keepattributes Signature
 
+# ============ Kuromoji Japanese Tokenizer ============
+-keep class com.atilika.kuromoji.** { *; }
+-dontwarn com.atilika.kuromoji.**
+
 # ============ Retrofit & OkHttp ============
 -keep class retrofit2.** { *; }
 -keep class okhttp3.** { *; }
@@ -67,6 +71,9 @@
 
 # ============ NewPipe Extractor & Jsoup ============
 -keep class org.schabi.newpipe.extractor.** { *; }
+-keep interface org.schabi.newpipe.extractor.** { *; }
+-keepclassmembers class org.schabi.newpipe.extractor.** { *; }
+-keeppackagenames org.schabi.newpipe.extractor**
 -dontwarn org.schabi.newpipe.extractor.**
 -keep class org.jsoup.** { *; }
 -dontwarn org.jsoup.**
@@ -76,9 +83,22 @@
 -dontwarn com.arthenica.ffmpegkit.**
 
 # ============ Rhino (org.mozilla.javascript) ============
+-keep class org.mozilla.javascript.** { *; }
+-keep interface org.mozilla.javascript.** { *; }
+-keep enum org.mozilla.javascript.** { *; }
+-keepclassmembers class org.mozilla.javascript.** { *; }
+-keepclassmembers enum org.mozilla.javascript.** { *; }
+-keep class org.mozilla.classfile.** { *; }
+-keepclassmembers class org.mozilla.classfile.** { *; }
+-keep class * extends org.mozilla.javascript.VMBridge { <init>(); }
+-keeppackagenames org.mozilla.javascript**
 -dontwarn java.beans.**
 -dontwarn org.mozilla.javascript.**
+-dontwarn org.mozilla.classfile.**
+-keep class javax.script.** { *; }
 -dontwarn javax.script.**
+-keep class jdk.dynalink.** { *; }
+-dontwarn jdk.dynalink.**
 
 # ============ SLF4J ============
 -dontwarn org.slf4j.**
@@ -96,3 +116,30 @@
 
 # ============ Media3 / ExoPlayer ============
 -dontwarn androidx.media3.**
+
+# ============ Kyant Backdrop & Shapes ============
+-keep class com.kyant.backdrop.** { *; }
+-dontwarn com.kyant.backdrop.**
+-keep class com.kyant.shapes.** { *; }
+-dontwarn com.kyant.shapes.**
+
+# ============ Haze ============
+-keep class dev.chrisbanes.haze.** { *; }
+-dontwarn dev.chrisbanes.haze.**
+
+# ============ AndroidX Security Crypto & KeyStore ============
+-keep class androidx.security.crypto.** { *; }
+-dontwarn androidx.security.crypto.**
+-keep class com.codetrio.spatialflow.data.sourcepool.SourcePoolSecurity {
+    public static *** *(...);
+}
+-keep class com.codetrio.spatialflow.data.sourcepool.SourcePoolStatusResponse { *; }
+-keep class com.codetrio.spatialflow.data.sourcepool.SourcesFeedResponse { *; }
+-keep class com.codetrio.spatialflow.data.sourcepool.DiscoveryResponse { *; }
+-keep class com.codetrio.spatialflow.data.sourcepool.ServiceSources { *; }
+-keep class com.codetrio.spatialflow.data.sourcepool.SourceCategoryStatus { *; }
+-keep class com.codetrio.spatialflow.data.sourcepool.SourceApiEntry { *; }
+-keep class com.codetrio.spatialflow.data.sourcepool.SourceAccountEntry { *; }
+-keep class com.codetrio.spatialflow.data.sourcepool.SourcePoolSummary { *; }
+
+

@@ -9,7 +9,8 @@ interface SyncLrcApi {
     fun getLyrics(
         @Query("track") track: String,
         @Query("artist") artist: String,
-        @Query("album") album: String?,
-        @Query("duration") duration: Int? // duration in seconds
+        @Query("type") type: String? = null,
+        @Query("album") album: String? = null,
+        @Query("duration") duration: Int? = null // duration in seconds
     ): Call<SyncLrcResponse>
 }

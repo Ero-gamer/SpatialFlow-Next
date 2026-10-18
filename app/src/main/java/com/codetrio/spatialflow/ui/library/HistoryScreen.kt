@@ -10,7 +10,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
+import com.codetrio.spatialflow.ui.components.LiquidGlassActionPill
+import com.codetrio.spatialflow.ui.components.LiquidGlassPillIconButton
+import com.codetrio.spatialflow.ui.components.rememberThrottledBackdrop
+import com.codetrio.spatialflow.ui.components.throttledLayerBackdrop
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -53,24 +62,15 @@ fun HistoryScreen(
     onSongMenuClick: (OnlineSong) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        topBar = {
-            TopAppBar(
-                title = { Text("Listening History", fontWeight = FontWeight.Bold) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
-                ),
-                windowInsets = WindowInsets(0, 0, 0, 0)
-            )
-        }
-    ) { paddingValues ->
+    val surfaceColor = MaterialTheme.colorScheme.background
+    val historyBackdrop = rememberThrottledBackdrop(surfaceColor)
+    val topBarPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 68.dp
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(surfaceColor)
+    ) {
         val pullToRefreshState = rememberPullToRefreshState()
         
         PullToRefreshBox(
@@ -79,13 +79,14 @@ fun HistoryScreen(
             state = pullToRefreshState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(paddingValues)
-                .background(MaterialTheme.colorScheme.background),
+                .throttledLayerBackdrop(historyBackdrop),
             indicator = {
                 PullToRefreshDefaults.Indicator(
                     state = pullToRefreshState,
                     isRefreshing = isRefreshing,
-                    modifier = Modifier.align(Alignment.TopCenter)
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = topBarPadding)
                 )
             }
         ) {
@@ -122,11 +123,12 @@ fun HistoryScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp)
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = topBarPadding, bottom = 120.dp)
                 ) {
                     itemsIndexed(
                         items = history,
-                        key = { index, song -> "history-${song.videoId}-$index" }
+                        key = { index, song -> "history-${song.videoId}-$index" },
+                        contentType = { _, _ -> "history_song" }
                     ) { index, song ->
                         SearchResultItem(
                             item = SearchItem.Song(song),
@@ -137,6 +139,23 @@ fun HistoryScreen(
                         )
                     }
                 }
+            }
+        }
+
+        // Floating Liquid Glass Action Pill Header (Sibling on top)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            LiquidGlassActionPill(backdrop = historyBackdrop) {
+                LiquidGlassPillIconButton(
+                    onClick = onBack,
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back"
+                )
             }
         }
     }

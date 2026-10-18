@@ -1,0 +1,10 @@
+v1.8.1 Release Highlights:
+* Added full OPUS streaming and download support with metadata tagging
+* Material 3 Expressive shapes, dynamic colors & spring physics
+* Real-time album art color extraction enabled by default
+* Apple Music-Style karaoke engine with syllable sync & smoothstep word fill
+* 120 FPS Focal Auto-Scroll & Accordion Spring Bounce wave
+* Spring Lyrics Bottom Sheet with custom timing sync controller
+* Rebuilt Playback Queue UI with drag-reorder & multi-select
+* Full Library Rescan & Database Rebuild tools in Settings
+* System Share integration for YouTube Music links

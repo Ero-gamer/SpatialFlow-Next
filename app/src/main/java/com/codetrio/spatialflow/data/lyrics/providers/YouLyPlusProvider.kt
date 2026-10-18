@@ -26,6 +26,7 @@ class YouLyPlusProvider : LyricsProvider {
         private const val TAG = "YouLyPlusProvider"
 
         private val BASE_URLS = listOf(
+            "https://mlc.kouzu.in/",
             "https://lyricsplus.binimum.org/",
             "https://lyricsplus.prjktla.my.id/",
             "https://lyricsplus.prjktla.workers.dev/",
@@ -40,7 +41,7 @@ class YouLyPlusProvider : LyricsProvider {
     }
 
     override fun getName(): String = "YouLyPlus"
-    override fun getPriority(): Int = 2
+    override fun getPriority(): Int = 5
 
     override fun search(track: TrackMetadata): LyricsResult? {
         val title = track.cleanedTitle
@@ -136,8 +137,8 @@ class YouLyPlusProvider : LyricsProvider {
 
                 client.newCall(req).execute().use { resp ->
                     if (resp.isSuccessful) {
-                        val body = resp.body?.string()
-                        if (!body.isNullOrBlank()) {
+                        val body = resp.body.string()
+                        if (body.isNotBlank()) {
                             val decoded = decode(body)
                             if (!decoded.isNullOrBlank()) {
                                 return decoded

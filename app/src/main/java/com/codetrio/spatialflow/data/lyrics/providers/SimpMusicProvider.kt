@@ -12,7 +12,7 @@ class SimpMusicProvider(private val api: SimpMusicApi) : LyricsProvider {
 
     override fun getName(): String = "SimpMusic"
 
-    override fun getPriority(): Int = 1
+    override fun getPriority(): Int = 16
 
     override fun search(track: TrackMetadata): LyricsResult? {
         try {

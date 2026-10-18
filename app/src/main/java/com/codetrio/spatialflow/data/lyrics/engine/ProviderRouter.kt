@@ -67,7 +67,11 @@ class ProviderRouter(
                 val deferreds = orderedProviders.map { provider ->
                     val isTtmlProvider = provider.getName().contains("Apple Music", ignoreCase = true) ||
                             provider.getName().contains("YouLyPlus", ignoreCase = true) ||
-                            provider.getName().contains("BetterLyrics", ignoreCase = true)
+                            provider.getName().contains("BetterLyrics", ignoreCase = true) ||
+                            provider.getName().contains("Portato", ignoreCase = true) ||
+                            provider.getName().contains("Musixmatch", ignoreCase = true) ||
+                            provider.getName().contains("Unison", ignoreCase = true) ||
+                            provider.getName().contains("BiniLyrics", ignoreCase = true)
 
                     provider to async(Dispatchers.IO) {
                         val start = System.currentTimeMillis()
@@ -151,12 +155,28 @@ class ProviderRouter(
         
         val isNewAppleMusic = newResult.providerName?.contains("Apple Music", ignoreCase = true) == true
         val isCurrentAppleMusic = current.providerName?.contains("Apple Music", ignoreCase = true) == true
+        val isNewUnisonOrBini = newResult.providerName?.contains("Unison", ignoreCase = true) == true ||
+                newResult.providerName?.contains("BiniLyrics", ignoreCase = true) == true ||
+                newResult.providerName?.contains("Portato", ignoreCase = true) == true ||
+                newResult.providerName?.contains("Musixmatch", ignoreCase = true) == true
+        val isCurrentUnisonOrBini = current.providerName?.contains("Unison", ignoreCase = true) == true ||
+                current.providerName?.contains("BiniLyrics", ignoreCase = true) == true ||
+                current.providerName?.contains("Portato", ignoreCase = true) == true ||
+                current.providerName?.contains("Musixmatch", ignoreCase = true) == true
 
         // ✨ Apple Music Word-by-Word is the absolute gold standard
         if (isNewAppleMusic && newResult.isWordByWord) {
             return true
         }
         if (isCurrentAppleMusic && current.isWordByWord) {
+            return false
+        }
+
+        // ✨ Unison / BiniLyrics Word-by-Word / Syllable is the next gold standard
+        if (isNewUnisonOrBini && newResult.isWordByWord && !isCurrentAppleMusic) {
+            return true
+        }
+        if (isCurrentUnisonOrBini && current.isWordByWord && !isNewAppleMusic) {
             return false
         }
 

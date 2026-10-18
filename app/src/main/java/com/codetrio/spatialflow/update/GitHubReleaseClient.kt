@@ -48,33 +48,90 @@ class GitHubReleaseClient(private val owner: String, private val repo: String) {
                     assetNames[asset.getString("name")] = asset.getString("browser_download_url")
                 }
 
-                var apkUrl: String? = null
-                val supportedAbis = android.os.Build.SUPPORTED_ABIS
-                
-                for (abi in supportedAbis) {
-                    val targetName = "app-$abi-release.apk"
-                    if (assetNames.containsKey(targetName)) {
-                        apkUrl = assetNames[targetName]
-                        break
-                    }
-                }
-                
-                if (apkUrl == null) {
-                    apkUrl = assetNames["app-universal-release.apk"] ?: assetNames["app-release.apk"]
-                }
-                
+                val apkUrl = resolveApkUrl(assetNames)
                 val checksumUrl = assetNames["checksum.txt"]
 
                 if (apkUrl != null) {
                     return ReleaseInfo(tagName, body, apkUrl, checksumUrl)
                 }
+            } else if (responseCode == 403) {
+                Log.w(TAG, "GitHub API rate limit hit (403), using web redirect fallback")
+                return fetchLatestReleaseViaRedirect()
             } else {
                 Log.e(TAG, "GitHub API returned code: $responseCode")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to fetch latest release", e)
+            Log.e(TAG, "Failed to fetch latest release from API, trying fallback", e)
+            return fetchLatestReleaseViaRedirect()
         }
         return null
+    }
+
+    private fun fetchLatestReleaseViaRedirect(): ReleaseInfo? {
+        return try {
+            val webUrl = "https://github.com/$owner/$repo/releases/latest"
+            val conn = URL(webUrl).openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = false
+            conn.connectTimeout = 8000
+            conn.readTimeout = 8000
+            conn.setRequestProperty("User-Agent", "SpatialFlow-UpdateChecker")
+
+            val location = conn.getHeaderField("Location")
+            conn.disconnect()
+
+            if (!location.isNullOrBlank()) {
+                val tag = location.substringAfterLast("/")
+                if (tag.isNotBlank()) {
+                    val supportedAbis = android.os.Build.SUPPORTED_ABIS
+                    val primaryAbi = supportedAbis.firstOrNull() ?: "arm64-v8a"
+                    val apkUrl = "https://github.com/$owner/$repo/releases/download/$tag/app-$primaryAbi-release.apk"
+                    return ReleaseInfo(tag, "New update available ($tag)", apkUrl, null)
+                }
+            }
+            null
+        } catch (e: Exception) {
+            Log.e(TAG, "Fallback release check failed", e)
+            null
+        }
+    }
+
+    private fun resolveApkUrl(assetNames: Map<String, String>): String? {
+        val supportedAbis = android.os.Build.SUPPORTED_ABIS
+
+        // 1. Exact ABI match from Gradle splits: app-$abi-release.apk
+        for (abi in supportedAbis) {
+            val targetName = "app-$abi-release.apk"
+            if (assetNames.containsKey(targetName)) {
+                return assetNames[targetName]
+            }
+        }
+
+        // 2. Exact universal or legacy release names
+        assetNames["app-universal-release.apk"]?.let { return it }
+        assetNames["app-release.apk"]?.let { return it }
+
+        // 3. Flexible ABI match (e.g. SpatialFlow-arm64-v8a.apk)
+        for (abi in supportedAbis) {
+            val match = assetNames.entries.firstOrNull { (name, _) ->
+                name.endsWith(".apk", ignoreCase = true) && name.contains(abi, ignoreCase = true)
+            }
+            if (match != null) {
+                return match.value
+            }
+        }
+
+        // 4. Universal / release keyword match
+        val universal = assetNames.entries.firstOrNull { (name, _) ->
+            name.endsWith(".apk", ignoreCase = true) && (name.contains("universal", ignoreCase = true) || name.contains("release", ignoreCase = true))
+        }
+        if (universal != null) {
+            return universal.value
+        }
+
+        // 5. Fallback: Any APK asset in the release
+        return assetNames.entries.firstOrNull { (name, _) ->
+            name.endsWith(".apk", ignoreCase = true)
+        }?.value
     }
 
     fun getAllReleases(): List<ReleaseInfo> {
@@ -115,19 +172,7 @@ class GitHubReleaseClient(private val owner: String, private val repo: String) {
                             assetNames[asset.getString("name")] = asset.getString("browser_download_url")
                         }
 
-                        val supportedAbis = android.os.Build.SUPPORTED_ABIS
-                        for (abi in supportedAbis) {
-                            val targetName = "app-$abi-release.apk"
-                            if (assetNames.containsKey(targetName)) {
-                                apkUrl = assetNames[targetName]
-                                break
-                            }
-                        }
-                        
-                        if (apkUrl == null) {
-                            apkUrl = assetNames["app-universal-release.apk"] ?: assetNames["app-release.apk"]
-                        }
-                        
+                        apkUrl = resolveApkUrl(assetNames)
                         checksumUrl = assetNames["checksum.txt"]
                     }
                     releases.add(ReleaseInfo(tagName, body, apkUrl, checksumUrl))

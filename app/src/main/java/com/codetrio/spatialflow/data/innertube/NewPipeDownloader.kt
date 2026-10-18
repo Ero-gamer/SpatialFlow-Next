@@ -15,9 +15,11 @@ import java.util.concurrent.TimeUnit
 class NewPipeDownloader private constructor() : Downloader() {
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .writeTimeout(12, TimeUnit.SECONDS)
+        .dns(com.codetrio.spatialflow.data.network.FastFallbackDns)
+        .connectionPool(okhttp3.ConnectionPool(10, 5, TimeUnit.MINUTES))
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(8, TimeUnit.SECONDS)
         .followRedirects(true)
         .followSslRedirects(true)
         .build()
@@ -41,23 +43,19 @@ class NewPipeDownloader private constructor() : Downloader() {
         }
 
         val response = client.newCall(requestBuilder.build()).execute()
+        return response.use { resp ->
+            val responseHeaders = resp.headers.toMultimap()
+            val responseBody = resp.body.string()
+            val latestUrl = resp.request.url.toString()
 
-        // Collect response headers
-        val responseHeaders = mutableMapOf<String, List<String>>()
-        response.headers.names().forEach { name ->
-            responseHeaders[name] = response.headers.values(name)
+            Response(
+                resp.code,
+                resp.message,
+                responseHeaders,
+                responseBody,
+                latestUrl
+            )
         }
-
-        val responseBody = response.body.string()
-        val latestUrl = response.request.url.toString()
-
-        return Response(
-            response.code,
-            response.message,
-            responseHeaders,
-            responseBody,
-            latestUrl
-        )
     }
 
     companion object {

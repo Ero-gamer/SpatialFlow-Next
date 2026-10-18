@@ -16,4 +16,5 @@ object PlayerPaletteState {
     val vibrantColor: MutableState<Color>      = mutableStateOf(Color.Black)
     val darkVibrantColor: MutableState<Color>  = mutableStateOf(Color.Black)
     val darkMutedColor: MutableState<Color>    = mutableStateOf(Color.Black)
+    val canvasFrameBitmap: MutableState<android.graphics.Bitmap?> = mutableStateOf(null)
 }

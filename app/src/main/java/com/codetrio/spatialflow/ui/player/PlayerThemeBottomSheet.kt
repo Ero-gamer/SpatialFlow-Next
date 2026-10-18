@@ -136,3 +136,110 @@ fun PlayerThemeBottomSheet(
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun NavStyleBottomSheet(
+    onDismissRequest: () -> Unit,
+    currentStyle: String,
+    onStyleSelect: (String) -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismissRequest,
+        dragHandle = { BottomSheetDefaults.DragHandle() }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(
+                text = "Navigation Bar Style",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
+            // Option 1: Docked Style
+            ListItem(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onStyleSelect("docked") },
+                headlineContent = {
+                    Text(
+                        text = "Docked Navigation Bar",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                supportingContent = {
+                    Text(
+                        text = "Classic full-width bottom navigation bar docked at the bottom of the screen.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                trailingContent = {
+                    RadioButton(
+                        selected = currentStyle == "docked",
+                        onClick = { onStyleSelect("docked") }
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent)
+            )
+
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f),
+                thickness = 1.dp,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+
+            // Option 2: Floating Expressive Style
+            ListItem(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onStyleSelect("floating") },
+                headlineContent = {
+                    Text(
+                        text = "Floating Expressive Bar",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                supportingContent = {
+                    Text(
+                        text = "Floating pill navigation bar with dynamic morphing pills and tactile spring animations.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                },
+                trailingContent = {
+                    RadioButton(
+                        selected = currentStyle == "floating",
+                        onClick = { onStyleSelect("floating") }
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = androidx.compose.ui.graphics.Color.Transparent)
+            )
+
+            Spacer(modifier = Modifier.height(28.dp))
+
+            // Close Button
+            Button(
+                onClick = onDismissRequest,
+                shape = RoundedCornerShape(24.dp),
+                colors = ButtonDefaults.filledTonalButtonColors(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Icon(Icons.Default.Close, contentDescription = "Close Nav Style Selector", modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Close", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+

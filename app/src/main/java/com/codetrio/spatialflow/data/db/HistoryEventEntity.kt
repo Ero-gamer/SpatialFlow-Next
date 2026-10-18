@@ -1,9 +1,17 @@
 package com.codetrio.spatialflow.data.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "history_events")
+@Entity(
+    tableName = "history_events",
+    indices = [
+        Index("timestamp"),
+        Index("songId"),
+        Index("artist")
+    ]
+)
 data class HistoryEventEntity(
     @PrimaryKey(autoGenerate = true) val eventId: Long = 0,
     val songId: String,          // videoId or id.toString()
@@ -12,5 +20,6 @@ data class HistoryEventEntity(
     val duration: Long,
     val thumbnailUrl: String?,   // local path or web URL
     val timestamp: Long,         // epoch milliseconds
-    val hourOfDay: Int           // 0..23 (for analytics charts!)
+    val hourOfDay: Int,          // 0..23 (for analytics charts!)
+    val isExplicit: Boolean = false
 )

@@ -14,8 +14,30 @@ pluginManagement {
     }
 }
 plugins {
+    id 'com.android.settings' version '9.3.2'
     id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
 }
+
+android {
+    execution {
+        profiles {
+            high {
+                r8 {
+                    jvmOptions += ["-Xms1024m", "-Xmx4096m", "-XX:+UseParallelGC", "-XX:+HeapDumpOnOutOfMemoryError"]
+                    runInSeparateProcess true
+                }
+            }
+            low {
+                r8 {
+                    jvmOptions += ["-Xms512m", "-Xmx2048m", "-XX:+UseParallelGC"]
+                    runInSeparateProcess true
+                }
+            }
+        }
+        defaultProfile "high"
+    }
+}
+
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)

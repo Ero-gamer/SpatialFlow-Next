@@ -1,0 +1,25 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Shell scripts and executables must always have LF line endings for Linux/macOS/CI/F-Droid
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Windows batch scripts must preserve CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Android binary assets and multimedia files
+*.png binary
+*.webp binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.aar binary
+*.so binary
+*.jks binary
+*.keystore binary
+*.apk binary
+*.aab binary

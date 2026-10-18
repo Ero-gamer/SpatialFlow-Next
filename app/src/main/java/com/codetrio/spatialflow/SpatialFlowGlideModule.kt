@@ -9,7 +9,7 @@ import com.bumptech.glide.module.AppGlideModule
 @GlideModule
 class SpatialFlowGlideModule : AppGlideModule() {
     override fun applyOptions(context: Context, builder: GlideBuilder) {
-        val prefs = context.getSharedPreferences("spatialflow_settings", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences("AppSettings", Context.MODE_PRIVATE)
         val maxSizeMb = prefs.getInt("image_cache_max_size", 128)
         val maxSizeBytes = (if (maxSizeMb <= 0) 128L else maxSizeMb.toLong()) * 1024L * 1024L
         

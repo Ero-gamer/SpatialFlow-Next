@@ -16,8 +16,20 @@ import com.codetrio.spatialflow.data.lyrics.TrackMetadata
 import com.codetrio.spatialflow.data.lyrics.providers.EmbeddedLyricsProvider
 import com.codetrio.spatialflow.data.lyrics.providers.LrcLibProvider
 import com.codetrio.spatialflow.data.lyrics.providers.KugouProvider
+import com.codetrio.spatialflow.data.lyrics.UnisonLyricsApi
+import com.codetrio.spatialflow.data.lyrics.BiniLyricsApi
+import com.codetrio.spatialflow.data.lyrics.providers.UnisonLyricsProvider
+import com.codetrio.spatialflow.data.lyrics.providers.BiniLyricsProvider
+import com.codetrio.spatialflow.data.lyrics.security.DeviceKeyIdentityManager
 import com.codetrio.spatialflow.data.lyrics.providers.BetterLyricsProvider
 import com.codetrio.spatialflow.data.lyrics.providers.SimpMusicProvider
+import com.codetrio.spatialflow.data.lyrics.providers.KouzuLyricsProvider
+import com.codetrio.spatialflow.data.lyrics.providers.YouLyPlusProvider
+import com.codetrio.spatialflow.data.lyrics.providers.SyncLrcProvider
+import com.codetrio.spatialflow.data.lyrics.providers.YouTubeSubtitleProvider
+import com.codetrio.spatialflow.data.lyrics.providers.YouTubeMusicLyricsProvider
+import com.codetrio.spatialflow.data.lyrics.SyncLrcApi
+import com.codetrio.spatialflow.data.lyrics.KugouLegacyApi
 import com.codetrio.spatialflow.data.lyrics.providers.LyricsProvider
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
@@ -144,8 +156,7 @@ class LyricsFetchManager private constructor(context: Context) {
             val cachedSingleText = LyricsHelper.getSingle(track.cleanedTitle, track.cleanedArtist)
             if (cachedSingleText != null) {
                 val isSynced = cachedSingleText.contains("[") || cachedSingleText.contains("<tt") || cachedSingleText.contains("<p begin=") || cachedSingleText.contains("ttm:begin")
-                val isWordByWord = (cachedSingleText.contains("<tt") || cachedSingleText.contains("<p begin=") || cachedSingleText.contains("ttm:begin")) ||
-                        (cachedSingleText.contains("<") && cachedSingleText.contains(">") && cachedSingleText.contains("["))
+                val isWordByWord = LyricsNormalizer.checkIsWordByWord(cachedSingleText)
                 val cachedResult = LyricsResult(
                     providerName = "Local Cache",
                     plainLyrics = if (!isSynced) cachedSingleText else null,
@@ -524,24 +535,92 @@ class LyricsFetchManager private constructor(context: Context) {
         // ═══════════════════════════════════════════
         providers.add(EmbeddedLyricsProvider())
 
-        // ═══════════════════════════════════════════
-        // YOUTUBE MUSIC PROVIDER (official source, highest network priority)
-        // ═══════════════════════════════════════════
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.YouTubeMusicLyricsProvider())
-
-        // ═══════════════════════════════════════════
-        // NETWORKING APIS
-        // ═══════════════════════════════════════════
-
         val gsonConverter = GsonConverterFactory.create()
 
-        // SyncLRC
-        val syncLrcApi = Retrofit.Builder()
+        // ═══════════════════════════════════════════
+        // UNIFIED & UNISON CRYPTO-ENABLED NETWORK CLIENTS
+        // ═══════════════════════════════════════════
+
+        // Signed ES256 Client with dynamic per-device KeyId
+        val betterLyricsClient = client.newBuilder()
+            .addInterceptor { chain ->
+                val original = chain.request()
+                val token = com.codetrio.spatialflow.data.lyrics.security.JwtTokenSigner.getOrGenerateBearerToken()
+                val deviceKeyId = try {
+                    DeviceKeyIdentityManager.getKeyId(appContext)
+                } catch (e: Exception) {
+                    "27f1baa3b8edc3851900ba513f44a9728808a1291880af31db13bf74c908fb47"
+                }
+                val builder = original.newBuilder()
+                if (!token.isNullOrEmpty()) {
+                    builder.header("Authorization", "Bearer $token")
+                    builder.header("X-Key-Id", deviceKeyId)
+                }
+                chain.proceed(builder.build())
+            }
+            .build()
+
+        val betterLyricsApiInstance = Retrofit.Builder()
+            .baseUrl("https://lyrics-api.boidu.dev/")
+            .client(betterLyricsClient)
+            .addConverterFactory(gsonConverter)
+            .build()
+            .create(BetterLyricsApi::class.java)
+        this.betterLyricsApi = betterLyricsApiInstance
+        providers.add(BetterLyricsProvider(appContext, betterLyricsApiInstance))
+
+        // Portato (QQ Music QRC Word-by-Word Karaoke - Priority 4)
+        providers.add(com.codetrio.spatialflow.data.lyrics.providers.BetterLyricsPortatoProvider(appContext))
+
+        // Musixmatch (Unified Stream - Word-by-Word & Synced - Priority 5)
+        providers.add(com.codetrio.spatialflow.data.lyrics.providers.MusixmatchUnifiedProvider(appContext))
+
+        // Unison Community Provider (Dynamic EC P-256 KeyId)
+        val unisonLyricsApi = Retrofit.Builder()
+            .baseUrl("https://unison.betterlyrics.org/")
+            .client(client)
+            .addConverterFactory(gsonConverter)
+            .build()
+            .create(UnisonLyricsApi::class.java)
+        providers.add(UnisonLyricsProvider(appContext, unisonLyricsApi))
+
+        // BiniLyrics Provider (TTML / Syllable / Word / Line)
+        val biniLyricsApi = Retrofit.Builder()
+            .baseUrl("https://lyrics-api.binimum.org/")
+            .client(client)
+            .addConverterFactory(gsonConverter)
+            .build()
+            .create(BiniLyricsApi::class.java)
+        providers.add(BiniLyricsProvider(biniLyricsApi))
+
+        // Kouzu MLC Lyrics (direct videoId & search word-by-word karaoke)
+        providers.add(KouzuLyricsProvider())
+
+        // YouLyPlus (multi-mirror TTML / LRC Karaoke)
+        providers.add(YouLyPlusProvider())
+
+        // SyncLRC (Primary API: api.synclrc.dev, Secondary Mirror: synclrc.dev)
+        val syncLrcPrimaryApi = Retrofit.Builder()
             .baseUrl("https://api.synclrc.dev/")
             .client(client)
             .addConverterFactory(gsonConverter)
             .build()
-            .create(com.codetrio.spatialflow.data.lyrics.SyncLrcApi::class.java)
+            .create(SyncLrcApi::class.java)
+
+        val syncLrcSecondaryApi = Retrofit.Builder()
+            .baseUrl("https://synclrc.dev/")
+            .client(client)
+            .addConverterFactory(gsonConverter)
+            .build()
+            .create(SyncLrcApi::class.java)
+
+        providers.add(SyncLrcProvider(syncLrcPrimaryApi, syncLrcSecondaryApi))
+
+        // Paxsenix providers
+        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixAppleMusicProvider(appContext))
+
+        // YouTube Subtitle (timed transcript captions)
+        providers.add(YouTubeSubtitleProvider())
 
         // LRCLIB
         val lrcLibApi = Retrofit.Builder()
@@ -550,6 +629,7 @@ class LyricsFetchManager private constructor(context: Context) {
             .addConverterFactory(gsonConverter)
             .build()
             .create(LrcLibApi::class.java)
+        providers.add(LrcLibProvider(lrcLibApi))
 
         // KuGou
         val kugouApi = Retrofit.Builder()
@@ -564,16 +644,15 @@ class LyricsFetchManager private constructor(context: Context) {
             .client(client)
             .addConverterFactory(gsonConverter)
             .build()
-            .create(com.codetrio.spatialflow.data.lyrics.KugouLegacyApi::class.java)
+            .create(KugouLegacyApi::class.java)
+        providers.add(KugouProvider(kugouApi, kugouLegacyApi))
 
-        // BetterLyrics
-        val betterLyricsApiInstance = Retrofit.Builder()
-            .baseUrl("https://lyrics-api.boidu.dev/")
-            .client(client)
-            .addConverterFactory(gsonConverter)
-            .build()
-            .create(BetterLyricsApi::class.java)
-        this.betterLyricsApi = betterLyricsApiInstance
+        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixSpotifyProvider(appContext))
+        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixNeteaseProvider(appContext))
+        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixYouTubeProvider(appContext))
+
+        // YouTube Music Provider (official InnerTube lyrics)
+        providers.add(YouTubeMusicLyricsProvider())
 
         // SimpMusic
         val simpMusicApi = Retrofit.Builder()
@@ -582,23 +661,6 @@ class LyricsFetchManager private constructor(context: Context) {
             .addConverterFactory(gsonConverter)
             .build()
             .create(SimpMusicApi::class.java)
-
-        // YouLyPlus (multi-mirror TTML / LRC Karaoke)
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.YouLyPlusProvider())
-
-        // YouTube Subtitle (timed transcript captions)
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.YouTubeSubtitleProvider())
-
-        // Paxsenix providers — no Retrofit needed; PaxsenixLyrics singleton handles HTTP with OkHttp
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixAppleMusicProvider(appContext))
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixSpotifyProvider(appContext))
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixMusixmatchProvider(appContext))
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixNeteaseProvider(appContext))
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.paxsenix.PaxsenixYouTubeProvider(appContext))
-        providers.add(com.codetrio.spatialflow.data.lyrics.providers.SyncLrcProvider(syncLrcApi))
-        providers.add(LrcLibProvider(lrcLibApi))
-        providers.add(KugouProvider(kugouApi, kugouLegacyApi))
-        providers.add(BetterLyricsProvider(betterLyricsApiInstance))
         providers.add(SimpMusicProvider(simpMusicApi))
 
         Log.d(TAG, "Initialized ${providers.size} lyrics providers")

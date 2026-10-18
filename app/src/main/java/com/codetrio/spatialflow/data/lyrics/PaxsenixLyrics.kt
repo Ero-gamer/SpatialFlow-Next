@@ -28,12 +28,13 @@ object PaxsenixLyrics {
     private const val ITUNES_BASE_URL = "https://itunes.apple.com"
 
     private val client = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(12, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
         .build()
 
     @Volatile
-    private var userAgentHeader: String = "SpatialFlow/1.8.1"
+    private var userAgentHeader: String = "SpatialFlow/${com.codetrio.spatialflow.BuildConfig.VERSION_NAME}"
 
     fun setUserAgent(appName: String, version: String) {
         userAgentHeader = "$appName/$version"
@@ -43,8 +44,9 @@ object PaxsenixLyrics {
 
     private fun get(context: Context?, path: String): String? {
         val url = if (path.startsWith("http")) path else "$BASE_URL$path"
-        val officialAgent = "SpatialFlow/1.0.0"
+        val officialAgent = if (userAgentHeader.isNotBlank()) userAgentHeader else "SpatialFlow/${com.codetrio.spatialflow.BuildConfig.VERSION_NAME}"
 
+        // 1st Priority: Official App User-Agent
         val req = Request.Builder()
             .url(url)
             .header("User-Agent", officialAgent)
@@ -53,23 +55,25 @@ object PaxsenixLyrics {
 
         try {
             client.newCall(req).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    return resp.body?.string()
+                if (resp.isSuccessful && resp.body != null) {
+                    return resp.body.string()
                 }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Request exception [$path]: ${e.message}")
         }
 
-        // Fallback to whitelisted agent
+        // Fallback: Browser User-Agent if 1st priority fails
+        val chromeUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         val reqFallback = Request.Builder()
             .url(url)
-            .header("User-Agent", userAgentHeader)
+            .header("User-Agent", chromeUserAgent)
+            .header("Accept", "*/*")
             .build()
 
         return try {
             client.newCall(reqFallback).execute().use { resp ->
-                if (resp.isSuccessful) resp.body?.string() else null
+                if (resp.isSuccessful && resp.body != null) resp.body.string() else null
             }
         } catch (e: Exception) {
             null
@@ -114,7 +118,7 @@ object PaxsenixLyrics {
             val itunesUrl = "$ITUNES_BASE_URL/search?term=$q&entity=song&limit=10"
             val req = Request.Builder()
                 .url(itunesUrl)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
                 .build()
 
             client.newCall(req).execute().use { resp ->
@@ -203,6 +207,12 @@ object PaxsenixLyrics {
 
     fun getNeteaseLyrics(context: Context?, title: String, artist: String, durationSec: Int = -1): String? {
         val q = enc("$title $artist")
+        val directBody = get(context, "/netease/lyrics?q=$q")
+        if (directBody != null) {
+            val extracted = extractLyrics(directBody)
+            if (!extracted.isNullOrBlank()) return extracted
+        }
+
         val searchBody = get(context, "/netease/search?q=$q") ?: return null
         val trackId = extractFirstId(searchBody) ?: return null
 
@@ -228,6 +238,12 @@ object PaxsenixLyrics {
         val d = durationSec.toString()
         val q = enc("$title $artist")
 
+        val directBody = get(context, "/musixmatch/lyrics?q=$q")
+        if (directBody != null) {
+            val extracted = extractLyrics(directBody)
+            if (!extracted.isNullOrBlank()) return extracted
+        }
+
         // 1. Try word-by-word first
         val wordBody = get(context, "/musixmatch/lyrics?q=$q&t=$t&a=$a&d=$d&type=word")
         if (wordBody != null) {
@@ -244,6 +260,11 @@ object PaxsenixLyrics {
 
     fun getSpotifyLyrics(context: Context?, title: String, artist: String): String? {
         val q = enc("$title $artist")
+        val directLyrics = get(context, "/spotify/lyrics?q=$q")
+        if (directLyrics != null) {
+            val extracted = extractLyrics(directLyrics)
+            if (!extracted.isNullOrBlank()) return extracted
+        }
         val searchBody = get(context, "/spotify/search?q=$q") ?: return null
         val trackId = extractFirstId(searchBody) ?: return null
         val lyricsBody = get(context, "/spotify/lyrics?id=${enc(trackId)}") ?: return null
@@ -252,6 +273,11 @@ object PaxsenixLyrics {
 
     fun getYouTubeLyrics(context: Context?, title: String, artist: String): String? {
         val q = enc("$title $artist")
+        val directLyrics = get(context, "/youtube/lyrics?q=$q")
+        if (directLyrics != null) {
+            val extracted = extractLyrics(directLyrics)
+            if (!extracted.isNullOrBlank()) return extracted
+        }
         val searchBody = get(context, "/youtube/search?q=$q") ?: return null
         val trackId = extractFirstId(searchBody) ?: return null
         val body = get(context, "/youtube/lyrics?id=${enc(trackId)}") ?: return null

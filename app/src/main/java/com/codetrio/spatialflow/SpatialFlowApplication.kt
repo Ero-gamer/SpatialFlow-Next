@@ -2,6 +2,7 @@ package com.codetrio.spatialflow
 
 import android.annotation.SuppressLint
 import android.app.Application
+import android.content.Context
 import android.os.Build
 import android.util.Log
 import androidx.appcompat.app.AppCompatDelegate
@@ -14,12 +15,12 @@ import com.bumptech.glide.Glide
 import com.bumptech.glide.GlideBuilder
 import com.codetrio.spatialflow.data.innertube.InnerTubeClient
 import com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor
-import com.codetrio.spatialflow.ui.player.canvas.CanvasArtworkPlaybackCache
 import com.codetrio.spatialflow.domain.repository.LocalCacheDataSource
-import javax.inject.Inject
+import com.codetrio.spatialflow.ui.player.canvas.CanvasArtworkPlaybackCache
 import com.google.android.material.color.DynamicColors
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 @HiltAndroidApp
 class SpatialFlowApplication : Application(), ImageLoaderFactory {
@@ -33,37 +34,59 @@ class SpatialFlowApplication : Application(), ImageLoaderFactory {
     lateinit var localCacheDataSource: LocalCacheDataSource
 
 
+    private var cachedImageLoader: ImageLoader? = null
+
     override fun newImageLoader(): ImageLoader {
-        return ImageLoader.Builder(this)
-            .okHttpClient { InnerTubeClient.httpClient }
-            .memoryCache {
-                MemoryCache.Builder(this)
-                    .maxSizePercent(0.25) // Dedicated high-speed memory cache (25% of available application heap)
-                    .strongReferencesEnabled(true)
-                    .weakReferencesEnabled(true)
-                    .build()
-            }
-            .diskCache {
-                DiskCache.Builder()
-                    .directory(this.cacheDir.resolve("image_cache"))
-                    .maxSizeBytes(250 * 1024 * 1024) // 250MB size quota for offline artwork persistent caching
-                    .build()
-            }
-            .components {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    add(coil.decode.ImageDecoderDecoder.Factory())
-                } else {
-                    add(coil.decode.GifDecoder.Factory())
+        return cachedImageLoader ?: synchronized(this) {
+            cachedImageLoader ?: ImageLoader.Builder(this)
+                .okHttpClient {
+                    okhttp3.OkHttpClient.Builder()
+                        .dispatcher(okhttp3.Dispatcher().apply {
+                            maxRequests = 128
+                            maxRequestsPerHost = 64
+                        })
+                        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                        .connectionPool(okhttp3.ConnectionPool(64, 5, java.util.concurrent.TimeUnit.MINUTES))
+                        .protocols(listOf(okhttp3.Protocol.HTTP_2, okhttp3.Protocol.HTTP_1_1))
+                        .build()
                 }
-            }
-            .crossfade(true)
-            .crossfade(300) // Expressive 300ms transition fade-in
-            .allowHardware(true) // Offload rendering directly to GPU hardware buffers for zero UI thread lag
-            .allowRgb565(false) // Disable 16-bit compression to ensure pure ARGB_8888 color resolution on premium displays
-            .diskCachePolicy(CachePolicy.ENABLED)
-            .memoryCachePolicy(CachePolicy.ENABLED)
-            .networkCachePolicy(CachePolicy.ENABLED)
-            .build()
+                .memoryCache {
+                    MemoryCache.Builder(this)
+                        .maxSizePercent(0.25) // Balanced 25% memory cache quota to prevent GC pressure
+                        .strongReferencesEnabled(true)
+                        .weakReferencesEnabled(true)
+                        .build()
+                }
+                .diskCache {
+                    val prefs = getSharedPreferences("AppSettings", MODE_PRIVATE)
+                    val maxSizeMb = prefs.getInt("image_cache_max_size", 128)
+                    val maxSizeBytes = (if (maxSizeMb <= 0) 128L else maxSizeMb.toLong()) * 1024L * 1024L
+                    DiskCache.Builder()
+                        .directory(this.cacheDir.resolve("image_cache"))
+                        .maxSizeBytes(maxSizeBytes)
+                        .build()
+                }
+                .components {
+                    add(com.codetrio.spatialflow.util.AudioArtworkFetcher.Factory(this@SpatialFlowApplication))
+                    add(com.codetrio.spatialflow.util.AudioArtworkFetcher.Keyer())
+                    add(com.codetrio.spatialflow.util.AudioArtworkFetcher.SongItemMapper())
+                    add(com.codetrio.spatialflow.util.AudioArtworkFetcher.SongItemKeyer())
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        add(coil.decode.ImageDecoderDecoder.Factory())
+                    } else {
+                        add(coil.decode.GifDecoder.Factory())
+                    }
+                }
+                .crossfade(true)
+                .crossfade(200) // Fast 200ms crossfade transition
+                .allowHardware(Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) // Zero-copy GPU bitmaps on Android P+
+                .allowRgb565(false)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .networkCachePolicy(CachePolicy.ENABLED)
+                .build().also { cachedImageLoader = it }
+        }
     }
 
     @SuppressLint("VisibleForTests")
@@ -79,6 +102,9 @@ class SpatialFlowApplication : Application(), ImageLoaderFactory {
 
         // Initialize canvas motion artwork disk cache
         CanvasArtworkPlaybackCache.init(this)
+
+        // Initialize Japanese Language Pack Manager / Kuromoji Tokenizer
+        com.codetrio.spatialflow.data.lyrics.JapaneseLanguagePackManager.initialize(this)
 
         // Warm up native FFmpeg binaries in background thread so playback can bind instantly later
         Thread {
@@ -109,10 +135,17 @@ class SpatialFlowApplication : Application(), ImageLoaderFactory {
         // Background Warm-up: Initialize NewPipe, OkHttp, and TLS to YouTube CDN
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             try {
-                // 1. Warm up OkHttp TCP+TLS connection to YouTube CDN
+                // 1. Warm up OkHttp TCP+TLS connection to YouTube CDN & InnerTube API
                 InnerTubeClient.httpClient.newCall(
                     okhttp3.Request.Builder()
                         .url("https://www.youtube.com/generate_204")
+                        .head()
+                        .build()
+                ).execute().close()
+
+                InnerTubeClient.httpClient.newCall(
+                    okhttp3.Request.Builder()
+                        .url("https://music.youtube.com/generate_204")
                         .head()
                         .build()
                 ).execute().close()
@@ -122,13 +155,11 @@ class SpatialFlowApplication : Application(), ImageLoaderFactory {
             }
 
             try {
-                // 2. Initialize NewPipe Extractor and perform a dummy extraction to JIT-warm the JavaScript engine
+                // 2. Initialize NewPipe Extractor and prime signature timestamp asynchronously
                 NewPipeStreamExtractor.init(this@SpatialFlowApplication)
-                // A lightweight dummy request to trigger JS evaluation
-                // This is a known lightweight video ID just for warming the engine
-                NewPipeStreamExtractor.getStreamUrl("dQw4w9WgXcQ")
-                Log.d("SpatialFlowApp", "Successfully JIT-warmed NewPipe JS Extractor engine")
-            } catch (e: Exception) {
+                InnerTubeClient.getCachedSignatureTimestamp("kJQP7kiw5Fk")
+                Log.d("SpatialFlowApp", "Successfully initialized NewPipe Extractor and primed signature cache")
+            } catch (e: Throwable) {
                 Log.w("SpatialFlowApp", "Failed to warm up NewPipe Extractor: ${e.message}")
             }
         }
@@ -139,6 +170,25 @@ class SpatialFlowApplication : Application(), ImageLoaderFactory {
         // Clean up old temp files on app start
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
             localCacheDataSource.clearOldCache()
+        }
+
+        // Pre-warm Source Pool leased accounts (Qobuz Hi-Res, Tidal, Deezer) for zero-latency lossless resolution
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                com.codetrio.spatialflow.data.sourcepool.SourcePoolAccountManager.refreshIfNeeded(this@SpatialFlowApplication)
+            } catch (e: Throwable) {
+                Log.w("SpatialFlowApp", "Failed to pre-warm source pool accounts: ${e.message}")
+            }
+        }
+
+        // Schedule periodic 24-hour background update check via WorkManager
+        com.codetrio.spatialflow.update.UpdateCheckWorker.schedulePeriodicCheck(this)
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (::localCacheDataSource.isInitialized) {
+            localCacheDataSource.trimMemory(level)
         }
     }
 }

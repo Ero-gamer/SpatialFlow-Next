@@ -15,6 +15,8 @@
     <string name="setting_vibration_strength">Vibration Strength</string> <!-- Playback settings -->
     <string name="settings_header_playback">Playback</string>
     <string name="setting_crossfade">Crossfade</string>
+    <string name="setting_automix">AutoMix</string>
+    <string name="setting_automix_desc">Smart DJ beat-matched transitions with resonant filter rides</string>
     <string name="setting_sleep_timer">Sleep Timer</string>
     <string name="setting_sleep_timer_off">Off</string> <!-- Library settings -->
     <string name="settings_header_library">Library</string>

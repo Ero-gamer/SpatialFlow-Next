@@ -33,7 +33,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -59,6 +58,7 @@ import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -92,8 +92,18 @@ import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
+import kotlin.math.abs
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.codetrio.spatialflow.MainActivity
@@ -118,6 +128,8 @@ fun EffectsScreenEntryPoint(
 
     // Observe enables
     val is8DEnabled by viewmodel.is8DEnabledFlow.collectAsStateWithLifecycle()
+    val speed8D by viewmodel.speed8D.collectAsStateWithLifecycle()
+    val reverb8D by viewmodel.reverb8D.collectAsStateWithLifecycle()
     val isReverbEnabled by viewmodel.isReverbEnabledFlow.collectAsStateWithLifecycle()
     val isEqualizerEnabled by viewmodel.isEqualizerEnabledFlow.collectAsStateWithLifecycle()
     val isLoudnessEnabled by viewmodel.isLoudnessEnabledFlow.collectAsStateWithLifecycle()
@@ -144,9 +156,17 @@ fun EffectsScreenEntryPoint(
         isProcessing = isProcessing,
         processingProgress = processingProgress,
         is8DEnabled = is8DEnabled,
+        speed8D = speed8D,
+        reverb8D = reverb8D,
         on8DToggle = { enabled ->
             viewmodel.set8DEnabled(enabled)
             viewmodel.triggerEffectsRefresh()
+        },
+        on8DSpeedChange = { speed ->
+            viewmodel.set8DSpeed(speed)
+        },
+        on8DReverbChange = { reverb ->
+            viewmodel.set8DReverb(reverb)
         },
         isReverbEnabled = isReverbEnabled,
         onReverbToggle = { viewmodel.setReverbEnabled(it) },
@@ -229,7 +249,11 @@ fun EffectsScreen(
     isProcessing: Boolean,
     processingProgress: Int,
     is8DEnabled: Boolean,
+    speed8D: Float = 0.15f,
+    reverb8D: Float = 0.12f,
     on8DToggle: (Boolean) -> Unit,
+    on8DSpeedChange: (Float) -> Unit = {},
+    on8DReverbChange: (Float) -> Unit = {},
     isReverbEnabled: Boolean,
     onReverbToggle: (Boolean) -> Unit,
     reverbPreset: Float,
@@ -290,8 +314,6 @@ fun EffectsScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface)
             .statusBarsPadding()
-            // Offset for Navigation Rail in landscape (80dp + margin)
-            .then(if (isLandscape) Modifier.padding(start = 88.dp) else Modifier)
             .nestedScroll(nestedScrollConnection)
             .verticalScroll(scrollState)
             .padding(horizontal = 24.dp)
@@ -331,13 +353,49 @@ fun EffectsScreen(
             ProcessingCard(processingProgress)
         }
 
+        // ── 1. Spatial Audio Container (8D + Reverb) ────────────────────────
+        Text(
+            text = "Spatial Audio",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 20.dp, bottom = 8.dp)
+        )
         SegmentedFeatureCard(
             enabled = isInteractionEnabled,
             items = listOf(
-                { Audio8DSection(is8DEnabled, on8DToggle, isInteractionEnabled) },
-                { ReverbSection(isReverbEnabled, onReverbToggle, reverbPreset, onReverbPresetChange, reverbIntensity, onReverbIntensityChange, isInteractionEnabled, if (isSpeedEnabled) playbackSpeed else 1.0f) },
+                { Audio8DSection(is8DEnabled, speed8D, reverb8D, on8DToggle, on8DSpeedChange, on8DReverbChange, isInteractionEnabled) },
+                { ReverbSection(isReverbEnabled, onReverbToggle, reverbPreset, onReverbPresetChange, reverbIntensity, onReverbIntensityChange, isInteractionEnabled, if (isSpeedEnabled) playbackSpeed else 1.0f) }
+            )
+        )
+
+        // ── 2. Equalizer & Dynamics Container ───────────────────────────────
+        Text(
+            text = "Equalizer & Dynamics",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
+        )
+        SegmentedFeatureCard(
+            enabled = isInteractionEnabled,
+            items = listOf(
                 { EqualizerSection(isEqualizerEnabled, onEqualizerToggle, eqBands, onEqBandChange, isInteractionEnabled) },
-                { LoudnessSection(isLoudnessEnabled, onLoudnessToggle, loudnessGain, onLoudnessGainChange, isInteractionEnabled) },
+                { LoudnessSection(isLoudnessEnabled, onLoudnessToggle, loudnessGain, onLoudnessGainChange, isInteractionEnabled) }
+            )
+        )
+
+        // ── 3. Playback & Balance Container ─────────────────────────────────
+        Text(
+            text = "Playback & Balance",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
+        )
+        SegmentedFeatureCard(
+            enabled = isInteractionEnabled,
+            items = listOf(
                 { BalanceSection(isBalanceEnabled, onBalanceToggle, balancePosition, onBalancePositionChange, isInteractionEnabled) },
                 { SpeedSection(isSpeedEnabled, onSpeedToggle, playbackSpeed, onPlaybackSpeedChange, isInteractionEnabled, isPitchMatched, onPitchMatchToggle) }
             )
@@ -396,12 +454,12 @@ fun ProcessingCard(progress: Int) {
 @Composable
 fun SegmentedFeatureCard(
     enabled: Boolean,
-    items: List<@Composable () -> Unit>
+    items: List<@Composable () -> Unit>,
+    modifier: Modifier = Modifier
 ) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(top = 20.dp)
             .alpha(if (enabled) 1f else 0.6f),
         verticalArrangement = Arrangement.spacedBy(ListItemDefaults.SegmentedGap)
     ) {
@@ -433,6 +491,10 @@ private fun getEffectsSegmentedShape(index: Int, count: Int): androidx.compose.u
  */
 @Composable
 fun ExpressiveSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, enabled: Boolean) {
+    val onPrimaryColor = MaterialTheme.colorScheme.onPrimary
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val primaryContainerColor = MaterialTheme.colorScheme.primaryContainer
+
     Switch(
         checked = checked,
         onCheckedChange = onCheckedChange,
@@ -443,17 +505,28 @@ fun ExpressiveSwitch(checked: Boolean, onCheckedChange: (Boolean) -> Unit, enabl
                     imageVector = Icons.Filled.Check,
                     contentDescription = null,
                     modifier = Modifier.size(SwitchDefaults.IconSize),
-                    tint = Color.White // Always white in both dark/light
+                    tint = onPrimaryColor
                 )
             }
-        } else null
+        } else null,
+        colors = SwitchDefaults.colors(
+            checkedThumbColor = primaryColor,
+            checkedIconColor = onPrimaryColor,
+            checkedTrackColor = primaryContainerColor,
+            uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+            uncheckedTrackColor = MaterialTheme.colorScheme.surfaceContainerHighest
+        )
     )
 }
 
 @Composable
 fun Audio8DSection(
     enabled: Boolean,
+    speed8D: Float = 0.15f,
+    reverb8D: Float = 0.12f,
     onToggle: (Boolean) -> Unit,
+    onSpeedChange: (Float) -> Unit = {},
+    onReverbChange: (Float) -> Unit = {},
     interactionEnabled: Boolean
 ) {
     var showDialog by remember { mutableStateOf(false) }
@@ -482,15 +555,93 @@ fun Audio8DSection(
                 Spacer(modifier = Modifier.height(16.dp))
                 Spatial8DVisualizer(
                     enabled = enabled && interactionEnabled,
+                    speedHz = speed8D,
                     modifier = Modifier.padding(horizontal = 28.dp)
                 )
                 Spacer(modifier = Modifier.height(16.dp))
+
+                // Interactive 8D Rotation Speed Slider
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Orbit Speed",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = when {
+                            speed8D < 0.09f -> "Slow"
+                            speed8D < 0.22f -> "Balanced"
+                            else -> "Fast"
+                        } + " (${String.format(java.util.Locale.US, "%.2f", speed8D)} Hz)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Slider(
+                    value = speed8D,
+                    onValueChange = onSpeedChange,
+                    valueRange = 0.05f..0.35f,
+                    enabled = interactionEnabled,
+                    colors = SliderDefaults.colors(
+                        thumbColor = MaterialTheme.colorScheme.primary,
+                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Interactive 8D Spatial Ambience / Reverb Slider
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Spatial Ambience",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = when {
+                            reverb8D < 0.02f -> "Off (Pure Direct)"
+                            reverb8D < 0.15f -> "Studio Space (${(reverb8D * 250).toInt()}%)"
+                            reverb8D < 0.28f -> "Acoustic Hall (${(reverb8D * 250).toInt()}%)"
+                            else -> "Concert Stage (${(reverb8D * 250).toInt()}%)"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Slider(
+                    value = reverb8D,
+                    onValueChange = onReverbChange,
+                    valueRange = 0.0f..0.35f,
+                    enabled = interactionEnabled,
+                    colors = SliderDefaults.colors(
+                        thumbColor = MaterialTheme.colorScheme.primary,
+                        activeTrackColor = MaterialTheme.colorScheme.primary,
+                        inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                )
+                Spacer(modifier = Modifier.height(8.dp))
             }
         }
         
         Spacer(modifier = Modifier.height(12.dp))
         Text(
-            text = "Spatial 360° rotating audio effect for an immersive sound stage experience.",
+            text = "Spatial 360° rotating audio effect for an immersive headphone sound stage in real time.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -499,8 +650,8 @@ fun Audio8DSection(
     if (showDialog) {
         AlertDialog(
             onDismissRequest = { showDialog = false },
-            title = { Text("Information") },
-            text = { Text("8D only works on Local/Downloaded Songs") },
+            title = { Text("8D Spatial Audio") },
+            text = { Text("8D Spatial Audio creates a dynamic 360° orbiting sound stage around your headphones in real time. Works seamlessly on all YouTube Music streams, local songs, and playlists without waiting.") },
             confirmButton = {
                 TextButton(onClick = { showDialog = false }) {
                     Text("Got it")
@@ -758,7 +909,15 @@ fun EqualizerSection(enabled: Boolean, onToggle: (Boolean) -> Unit, bands: List<
         Row(modifier = Modifier.fillMaxWidth().height(eqHeight), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             bands.forEachIndexed { index, value ->
                 Box(modifier = Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                    ResponsiveSlider(value = value, onValueChange = { onBandChange(index, it) }, valueRange = -12f..12f, enabled = enabled && interactionEnabled, modifier = Modifier.graphicsLayer { rotationZ = 270f; transformOrigin = TransformOrigin.Center }.requiredWidth(sliderWidth))
+                    VerticalExpressiveEqSlider(
+                        value = value,
+                        onValueChange = { onBandChange(index, it) },
+                        valueRange = -12f..12f,
+                        enabled = enabled && interactionEnabled,
+                        modifier = Modifier
+                            .fillMaxHeight()
+                            .padding(vertical = 12.dp)
+                    )
                 }
             }
         }
@@ -974,6 +1133,166 @@ fun ReverbSection(
                     Text(text = "Lush", style = MaterialTheme.typography.labelSmall)
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun VerticalExpressiveEqSlider(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    enabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    var isDragging by remember { mutableStateOf(false) }
+    var localValue by remember(value) { mutableFloatStateOf(value.coerceIn(valueRange)) }
+    val haptic = LocalHapticFeedback.current
+
+    LaunchedEffect(value) {
+        if (!isDragging) {
+            localValue = value.coerceIn(valueRange)
+        }
+    }
+
+    val animatedValue by animateFloatAsState(
+        targetValue = localValue,
+        animationSpec = if (isDragging) androidx.compose.animation.core.snap() else spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+        label = "m3_expressive_eq_value"
+    )
+
+    val interactionScale by animateFloatAsState(
+        targetValue = if (isDragging) 1.22f else 1.0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
+        label = "m3_expressive_eq_press"
+    )
+
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val onPrimaryColor = MaterialTheme.colorScheme.onPrimary
+    val surfaceContainerHighestColor = MaterialTheme.colorScheme.surfaceContainerHighest
+    val onSurfaceVariantColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val disabledColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxHeight()
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectVerticalDragGestures(
+                    onDragStart = { offset ->
+                        isDragging = true
+                        val totalRange = valueRange.endInclusive - valueRange.start
+                        val fraction = (1f - (offset.y / size.height)).coerceIn(0f, 1f)
+                        val newValue = valueRange.start + fraction * totalRange
+                        if ((localValue <= 0f && newValue > 0f) || (localValue >= 0f && newValue < 0f)) {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        }
+                        localValue = newValue
+                        onValueChange(newValue)
+                    },
+                    onDragEnd = { isDragging = false },
+                    onDragCancel = { isDragging = false },
+                    onVerticalDrag = { change, _ ->
+                        change.consume()
+                        val totalRange = valueRange.endInclusive - valueRange.start
+                        val fraction = (1f - (change.position.y / size.height)).coerceIn(0f, 1f)
+                        val newValue = valueRange.start + fraction * totalRange
+                        if ((localValue < 0f && newValue >= 0f) || (localValue > 0f && newValue <= 0f)) {
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        }
+                        localValue = newValue
+                        onValueChange(newValue)
+                    }
+                )
+            }
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                detectTapGestures { offset ->
+                    val totalRange = valueRange.endInclusive - valueRange.start
+                    val fraction = (1f - (offset.y / size.height)).coerceIn(0f, 1f)
+                    val newValue = valueRange.start + fraction * totalRange
+                    localValue = newValue
+                    onValueChange(newValue)
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        val totalRange = valueRange.endInclusive - valueRange.start
+        val normalizedValue = ((animatedValue - valueRange.start) / totalRange).coerceIn(0f, 1f)
+        val zeroFraction = ((0f - valueRange.start) / totalRange).coerceIn(0f, 1f)
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val width = size.width
+            val height = size.height
+            val trackWidth = (14.dp * if (isDragging) 1.15f else 1.0f).toPx()
+            val centerX = width / 2f
+            val zeroY = height * (1f - zeroFraction)
+            val currentY = height * (1f - normalizedValue)
+
+            val activeColor = if (enabled) primaryColor else disabledColor
+            val inactiveColor = if (enabled) surfaceContainerHighestColor else disabledColor.copy(alpha = 0.15f)
+
+            // 1. M3 Expressive Inactive Capsule Track
+            drawRoundRect(
+                color = inactiveColor,
+                topLeft = Offset(centerX - trackWidth / 2f, 0f),
+                size = Size(trackWidth, height),
+                cornerRadius = CornerRadius(trackWidth / 2f)
+            )
+
+            // 2. Active Centered Capsule Fill (from 0 dB)
+            val fillTop = minOf(zeroY, currentY)
+            val fillHeight = abs(currentY - zeroY)
+            if (fillHeight > 0.5f) {
+                drawRoundRect(
+                    color = activeColor,
+                    topLeft = Offset(centerX - trackWidth / 2f, fillTop),
+                    size = Size(trackWidth, fillHeight),
+                    cornerRadius = CornerRadius(trackWidth / 2f)
+                )
+            }
+
+            // 3. M3 Expressive Center (0 dB) Stop Indicator Line
+            val markerWidth = 8.dp.toPx()
+            val markerHeight = 2.dp.toPx()
+            drawRoundRect(
+                color = if (enabled) onSurfaceVariantColor.copy(alpha = 0.6f) else disabledColor,
+                topLeft = Offset(centerX - markerWidth / 2f, zeroY - markerHeight / 2f),
+                size = Size(markerWidth, markerHeight),
+                cornerRadius = CornerRadius(1.dp.toPx())
+            )
+
+            // 4. M3 Expressive Pill Thumb Handle
+            val thumbWidth = (28.dp * interactionScale).toPx()
+            val thumbHeight = (8.dp * interactionScale).toPx()
+
+            // Outer Glow shadow on press
+            if (enabled && isDragging) {
+                drawRoundRect(
+                    color = activeColor.copy(alpha = 0.25f),
+                    topLeft = Offset(centerX - (thumbWidth + 8.dp.toPx()) / 2f, currentY - (thumbHeight + 8.dp.toPx()) / 2f),
+                    size = Size(thumbWidth + 8.dp.toPx(), thumbHeight + 8.dp.toPx()),
+                    cornerRadius = CornerRadius((thumbHeight + 8.dp.toPx()) / 2f)
+                )
+            }
+
+            // Expressive Thumb Capsule Body
+            drawRoundRect(
+                color = activeColor,
+                topLeft = Offset(centerX - thumbWidth / 2f, currentY - thumbHeight / 2f),
+                size = Size(thumbWidth, thumbHeight),
+                cornerRadius = CornerRadius(thumbHeight / 2f)
+            )
+
+            // Inner Pill Line Accent
+            val innerLineWidth = 10.dp.toPx()
+            val innerLineHeight = 2.dp.toPx()
+            drawRoundRect(
+                color = if (enabled) onPrimaryColor else surfaceContainerHighestColor,
+                topLeft = Offset(centerX - innerLineWidth / 2f, currentY - innerLineHeight / 2f),
+                size = Size(innerLineWidth, innerLineHeight),
+                cornerRadius = CornerRadius(1.dp.toPx())
+            )
         }
     }
 }

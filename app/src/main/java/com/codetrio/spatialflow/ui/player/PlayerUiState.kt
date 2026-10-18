@@ -21,5 +21,6 @@ data class PlayerUiState(
     val isCurrentSongDownloaded: Boolean = false,
     val currentSongDownloadProgress: Int? = null,
     val streamingQuality: String = "High",
-    val playbackFormat: String = "OPUS"
+    val playbackFormat: String = "",
+    val playbackProvider: String = ""
 )

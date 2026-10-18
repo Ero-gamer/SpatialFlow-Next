@@ -14,13 +14,17 @@ import android.media.AudioManager
 import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.media.audiofx.LoudnessEnhancer
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
@@ -88,6 +92,19 @@ import javax.inject.Inject
 import kotlin.math.min
 import kotlin.time.Duration.Companion.milliseconds
 
+import com.codetrio.spatialflow.service.automix.AutoMixAnalyzer
+import com.codetrio.spatialflow.service.automix.AutoMixFilterProcessor
+import com.codetrio.spatialflow.service.automix.AutoMixPerformanceMode
+import com.codetrio.spatialflow.service.automix.AutoMixAnalysisState
+import com.codetrio.spatialflow.service.automix.AutoMixAnalysisStates
+import com.codetrio.spatialflow.service.automix.AutoMixTransitionWindow
+import com.codetrio.spatialflow.service.automix.AutoMixStyle
+import com.codetrio.spatialflow.service.automix.AutoMixTrackInfo
+import com.codetrio.spatialflow.service.automix.AutoMixPlan
+import com.codetrio.spatialflow.service.automix.AutoMixPlanner
+import com.codetrio.spatialflow.service.automix.AutoMixUiState
+import kotlinx.coroutines.withTimeout
+
 @OptIn(UnstableApi::class)
 @AndroidEntryPoint
 class AudioPlaybackService : MediaSessionService() {
@@ -114,6 +131,7 @@ class AudioPlaybackService : MediaSessionService() {
         const val ACTION_TOGGLE_LOOP = "com.codetrio.spatialflow.ACTION_TOGGLE_LOOP"
         const val ACTION_CYCLE_PLAYBACK_MODE = "com.codetrio.spatialflow.ACTION_CYCLE_PLAYBACK_MODE"
         const val ACTION_TOGGLE_FAV = "com.codetrio.spatialflow.ACTION_TOGGLE_FAV"
+        const val ACTION_DUMP_BIT_PERFECT_DIAGNOSTICS = "com.codetrio.spatialflow.ACTION_DUMP_BIT_PERFECT_DIAGNOSTICS"
 
         private const val PREFS_NAME = "AppSettings"
         private const val KEY_CROSSFADE_ENABLED = "crossfade_enabled"
@@ -121,6 +139,8 @@ class AudioPlaybackService : MediaSessionService() {
         private const val KEY_AUDIO_FOCUS = "audio_focus"
         private const val KEY_DISCONNECT_ACTION = "disconnect_action"
         private const val KEY_RESUME_ON_CONNECT = "resume_on_connect"
+        const val KEY_AUTOMIX_ENABLED = "automix_enabled"
+        const val KEY_AUTOMIX_PERFORMANCE_MODE = "automix_performance_mode"
 
         val CMD_TOGGLE_LOOP = SessionCommand(ACTION_TOGGLE_LOOP, Bundle.EMPTY)
         val CMD_CYCLE_PLAYBACK_MODE = SessionCommand(ACTION_CYCLE_PLAYBACK_MODE, Bundle.EMPTY)
@@ -151,6 +171,32 @@ class AudioPlaybackService : MediaSessionService() {
             isBitPerfectProvider = isBitPerfectProvider,
             onBypassed = onBypassed
         )
+
+        fun dumpBitPerfectDiagnostics(): String {
+            return currentInstance?.logBitPerfectDiagnostics() ?: buildString {
+                val src = com.codetrio.spatialflow.service.dac.UsbDacManager.liveSourceStats.value
+                val runtime = com.codetrio.spatialflow.service.dac.UsbDacManager.runtimeState.value
+                val result = runtime.bitPerfectResult
+                val dacState = com.codetrio.spatialflow.service.dac.UsbDacManager.liveDacStats.value
+                appendLine("========== SpatialFlow Bit-Perfect Diagnostics ==========")
+                appendLine("Active Track: Service not active / No track playing")
+                appendLine("Source Format:")
+                appendLine("  sampleRate: ${src.sampleRateHz}")
+                appendLine("  bitDepth: ${src.bitDepth}")
+                appendLine("  channelCount: ${src.channelCount}")
+                appendLine("  mimeType: ${src.mimeType}")
+                appendLine("BitPerfectResult: $result")
+                appendLine("Connected Hardware: ${dacState.deviceName} (isUsbDac=${dacState.isUsbDac})")
+                appendLine("Mixer Mode: ${dacState.mixerModeSummary}")
+                appendLine("Active Output Rate: ${runtime.outputSampleRate} Hz (${runtime.outputBitDepth}-bit)")
+                appendLine("--- adb dumpsys command (active track extraction) ---")
+                appendLine("Command: adb shell dumpsys audio")
+                appendLine("Alternative: adb shell dumpsys media.audio_flinger")
+                appendLine("--- Sink AudioTrack Format ---")
+                appendLine("output format not accessible via Media3")
+                appendLine("=========================================================")
+            }.also { Log.i(TAG, it) }
+        }
     }
 
     private val binder: IBinder = LocalBinder()
@@ -179,6 +225,10 @@ class AudioPlaybackService : MediaSessionService() {
 
     val hapticManager by lazy {
         com.codetrio.spatialflow.util.PlayerHapticManager(applicationContext)
+    }
+
+    val liveManager by lazy {
+        com.codetrio.spatialflow.service.live.SpatialFlowLiveManager(applicationContext)
     }
 
     fun cancelInFlightLoads() {
@@ -256,6 +306,221 @@ class AudioPlaybackService : MediaSessionService() {
     private var wasPausedByFocusLoss = false
     private var audioManager: AudioManager? = null
 
+    // --- Managed Background WakeLock & WifiLock (Zero-Sleep & Anti-Battery Leak Rule) ---
+    private var playbackWakeLock: PowerManager.WakeLock? = null
+    private var playbackWifiLock: WifiManager.WifiLock? = null
+
+    internal fun acquirePlaybackLocks() {
+        try {
+            if (playbackWakeLock == null) {
+                val pm = getSystemService(POWER_SERVICE) as? PowerManager
+                playbackWakeLock = pm?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SpatialFlow:PlaybackWakeLock")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (playbackWakeLock?.isHeld != true) {
+                playbackWakeLock?.acquire(30 * 60 * 1000L) // 30-min safety timeout protects battery
+                Log.d(TAG, "Acquired playback WakeLock with 30-minute safety timeout")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire playback WakeLock: ${e.message}")
+        }
+
+        try {
+            if (playbackWifiLock == null) {
+                val wm = applicationContext.getSystemService(WIFI_SERVICE) as? WifiManager
+                val lockType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                playbackWifiLock = wm?.createWifiLock(lockType, "SpatialFlow:PlaybackWifiLock")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (playbackWifiLock?.isHeld != true) {
+                playbackWifiLock?.acquire()
+                Log.d(TAG, "Acquired playback WifiLock")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire playback WifiLock: ${e.message}")
+        }
+    }
+
+    internal fun releasePlaybackLocks() {
+        try {
+            if (playbackWakeLock?.isHeld == true) {
+                playbackWakeLock?.release()
+                Log.d(TAG, "Released playback WakeLock")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing WakeLock: ${e.message}")
+        }
+
+        try {
+            if (playbackWifiLock?.isHeld == true) {
+                playbackWifiLock?.release()
+                Log.d(TAG, "Released playback WifiLock")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing WifiLock: ${e.message}")
+        }
+    }
+
+    // --- Autonomous Service-Side Queue & Playback State ---
+    var servicePlaylist: List<SongItem> = emptyList()
+        private set
+    var serviceCurrentIndex: Int = -1
+        private set
+    var serviceRepeatMode: Int = PlayerSharedViewModel.REPEAT_OFF
+        private set
+    var serviceShuffleEnabled: Boolean = false
+        private set
+    var serviceAutoplayEnabled: Boolean = true
+        private set
+    private var nextPredictedShuffleIndex: Int = -1
+    private val servicePlayedShuffledIds = mutableSetOf<Long>()
+    private val shuffleRandom = java.util.Random()
+    var currentQueueStrategy: com.codetrio.spatialflow.player.queue.Queue? = null
+
+    fun setServicePlaylist(songs: List<SongItem>, currentIndex: Int = -1, queue: com.codetrio.spatialflow.player.queue.Queue? = null) {
+        servicePlaylist = songs
+        if (currentIndex in songs.indices) {
+            serviceCurrentIndex = currentIndex
+        }
+        if (queue != null) {
+            currentQueueStrategy = queue
+        }
+        nextPredictedShuffleIndex = -1
+    }
+
+    fun addSongsToServicePlaylist(newSongs: List<SongItem>) {
+        if (newSongs.isEmpty()) return
+        val current = servicePlaylist.toMutableList()
+        val existingIds = current.map { it.id }.toSet()
+        val unique = newSongs.filter { it.id !in existingIds }
+        if (unique.isEmpty()) return
+        current.addAll(unique)
+        servicePlaylist = current
+        viewModel?.let { vm ->
+            val vmList = vm.songList.value
+            val vmIds = vmList.map { it.id }.toSet()
+            val forVm = unique.filter { it.id !in vmIds }
+            if (forVm.isNotEmpty()) {
+                vm.addSongsToQueue(forVm)
+            }
+        }
+        refreshNativeQueue()
+    }
+
+    fun peekNextSongIndex(ignoreRepeatOne: Boolean = false): Int {
+        val songs = servicePlaylist
+        if (songs.isEmpty()) return -1
+
+        if (!ignoreRepeatOne && serviceRepeatMode == PlayerSharedViewModel.REPEAT_ONE) {
+            return if (serviceCurrentIndex in songs.indices) serviceCurrentIndex else 0
+        }
+
+        if (serviceShuffleEnabled && songs.size > 1) {
+            val predicted = nextPredictedShuffleIndex
+            if (predicted in songs.indices && predicted != serviceCurrentIndex) {
+                val predictedSong = songs[predicted]
+                if (predictedSong.id !in servicePlayedShuffledIds) {
+                    return predicted
+                }
+            }
+            val unplayed = songs.filter { it.id !in servicePlayedShuffledIds && it.id != currentSong?.id }
+            if (unplayed.isNotEmpty()) {
+                val pick = unplayed[shuffleRandom.nextInt(unplayed.size)]
+                val idx = songs.indexOfFirst { it.id == pick.id }
+                nextPredictedShuffleIndex = idx
+                return idx
+            } else {
+                servicePlayedShuffledIds.clear()
+                currentSong?.id?.let { servicePlayedShuffledIds.add(it) }
+                if (serviceRepeatMode == PlayerSharedViewModel.REPEAT_ALL) {
+                    val pool = songs.filter { it.id != currentSong?.id }
+                    if (pool.isNotEmpty()) {
+                        val pick = pool[shuffleRandom.nextInt(pool.size)]
+                        val idx = songs.indexOfFirst { it.id == pick.id }
+                        nextPredictedShuffleIndex = idx
+                        return idx
+                    }
+                }
+                return -1
+            }
+        }
+
+        val next = serviceCurrentIndex + 1
+        return if (next >= songs.size) {
+            if (serviceRepeatMode == PlayerSharedViewModel.REPEAT_ALL || (ignoreRepeatOne && serviceRepeatMode == PlayerSharedViewModel.REPEAT_ONE)) 0 else -1
+        } else next
+    }
+
+    fun checkQueueAndFetchMore() {
+        if (!serviceAutoplayEnabled) return
+        val queue = currentQueueStrategy
+        val currentIdx = serviceCurrentIndex
+        val listSize = servicePlaylist.size
+
+        if (queue != null && listSize - currentIdx <= 5 && queue.hasNextPage()) {
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    val nextItems = queue.nextPage()
+                    if (nextItems.isNotEmpty()) {
+                        withContext(Dispatchers.Main) {
+                            if (serviceAutoplayEnabled) {
+                                addSongsToServicePlaylist(nextItems)
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to fetch next queue page in service", e)
+                }
+            }
+        } else if (listSize - currentIdx <= 3 && (queue == null || !queue.hasNextPage()) && serviceAutoplayEnabled) {
+            fetchAutoplayContinuation()
+        }
+    }
+
+    private var isServiceFetchingRadio = false
+
+    fun fetchAutoplayContinuation(onComplete: ((Boolean) -> Unit)? = null) {
+        if (!serviceAutoplayEnabled || isServiceFetchingRadio) {
+            onComplete?.invoke(false)
+            return
+        }
+        val songForRadio = currentSong ?: servicePlaylist.lastOrNull() ?: return
+        if (songForRadio.videoId.isNullOrEmpty()) {
+            onComplete?.invoke(false)
+            return
+        }
+
+        isServiceFetchingRadio = true
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val radioQueue = com.codetrio.spatialflow.player.queue.YouTubeQueue.radio(songForRadio)
+                currentQueueStrategy = radioQueue
+                val status = radioQueue.getInitialStatus()
+                val existingIds = servicePlaylist.mapNotNull { it.videoId }.toSet()
+                val newItems = status.items.filter { it.videoId != null && it.videoId !in existingIds }
+                withContext(Dispatchers.Main) {
+                    if (newItems.isNotEmpty() && serviceAutoplayEnabled) {
+                        addSongsToServicePlaylist(newItems)
+                        onComplete?.invoke(true)
+                    } else {
+                        onComplete?.invoke(false)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to fetch radio autoplay continuation in service", e)
+                withContext(Dispatchers.Main) { onComplete?.invoke(false) }
+            } finally {
+                isServiceFetchingRadio = false
+            }
+        }
+    }
+
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
@@ -329,14 +594,29 @@ class AudioPlaybackService : MediaSessionService() {
     private var prefListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
     private var preloadJob: Job? = null
 
+    // --- Automix Engine ---
+    private var autoMixAnalyzer: AutoMixAnalyzer? = null
+    private var autoMixEnabled: Boolean = false
+    private var autoMixPerformanceMode: AutoMixPerformanceMode = AutoMixPerformanceMode.BALANCED
+    private var scheduledAutoMixPlan: AutoMixPlan? = null
+    private var automixTriggerJob: Job? = null
+
 
     private val mainPlayerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) {
+                acquirePlaybackLocks()
+                liveManager.onPlaybackStarted()
+            } else {
+                releasePlaybackLocks()
+                liveManager.onPlaybackStopped()
+            }
             viewModel?.postIsPlaying(isPlaying)
             telemetryManager.onPlaybackStateChanged(isPlaying)
             if (::lastFmScrobbleManager.isInitialized) {
                 lastFmScrobbleManager.onPlaybackStateChanged(isPlaying)
             }
+            com.codetrio.spatialflow.service.dac.UsbDacManager.setPlaybackActive(isPlaying)
             if (isPlaying) {
                 handler.removeCallbacks(progressUpdateRunnable)
                 handler.post(progressUpdateRunnable)
@@ -351,6 +631,8 @@ class AudioPlaybackService : MediaSessionService() {
         }
 
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
+            serviceShuffleEnabled = shuffleModeEnabled
+            nextPredictedShuffleIndex = -1
             viewModel?.let { vm ->
                 if (vm.isShuffleEnabled.value != shuffleModeEnabled) {
                     vm.setShuffleEnabled(shuffleModeEnabled)
@@ -420,7 +702,7 @@ class AudioPlaybackService : MediaSessionService() {
             
             // --- LOCAL AUDIO FALLBACK RECOVERY ---
             val curUri = currentSourceUri
-            val currentSong = viewModel?.currentSong?.value
+            val currentSong = this@AudioPlaybackService.currentSong ?: viewModel?.currentSong?.value
             val directPath = currentSong?.path
             if (curUri != null && curUri.scheme == "content" && !directPath.isNullOrBlank()) {
                 val file = File(directPath)
@@ -490,7 +772,9 @@ class AudioPlaybackService : MediaSessionService() {
                         setResolvedStreamProvider(fallbackProvider)
 
                         // Crucial: Invalidate QueuePreloader so it doesn't return the stale 403/404 URI!
-                        val targetSong = viewModel?.songList?.value?.find { it.videoId == videoId || it.id.toString() == videoId }
+                        val targetSong = servicePlaylist.find { it.videoId == videoId || it.id.toString() == videoId }
+                                         ?: viewModel?.songList?.value?.find { it.videoId == videoId || it.id.toString() == videoId }
+                                         ?: this@AudioPlaybackService.currentSong
                                          ?: viewModel?.currentSong?.value
                         targetSong?.let { queuePreloader.invalidate(it.id) }
 
@@ -521,15 +805,28 @@ class AudioPlaybackService : MediaSessionService() {
 
             consecutivePlaybackFailures++
             if (consecutivePlaybackFailures >= 3) {
-                Log.e(TAG, "Playback circuit breaker tripped: $consecutivePlaybackFailures consecutive failures. Halting auto-skip.")
-                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Playback paused: Unable to stream tracks")
-                viewModel?.postIsProcessing(false)
-                return
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
+                val isConnected = cm?.activeNetwork?.let { net ->
+                    cm.getNetworkCapabilities(net)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                } == true
+                if (!isConnected) {
+                    Log.e(TAG, "Playback circuit breaker tripped: No internet connection. Halting auto-skip.")
+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("No internet connection")
+                    viewModel?.postIsProcessing(false)
+                    return
+                }
+                if (consecutivePlaybackFailures >= 5) {
+                    Log.e(TAG, "Playback circuit breaker tripped: $consecutivePlaybackFailures consecutive failures. Halting auto-skip.")
+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Playback paused: Unable to stream tracks")
+                    viewModel?.postIsProcessing(false)
+                    return
+                }
             }
 
+            val delayMs = (400L * consecutivePlaybackFailures).coerceIn(400L, 2000L)
             handler.postDelayed({
-                viewModel?.playNextSong(true)
-            }, 600)
+                playNext(force = true)
+            }, delayMs)
         }
 
     private var bufferStallWatchdogJob: Job? = null
@@ -577,7 +874,9 @@ class AudioPlaybackService : MediaSessionService() {
             val fmt = getActiveAudioFormat()
             if (fmt.isNotEmpty()) viewModel?.updatePlaybackFormat(fmt)
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
-                Log.d(TAG, "⚡ NATIVE GAPLESS TRANSITION COMPLETED! Resynchronizing UI.")
+                Log.d(TAG, "⚡ NATIVE GAPLESS TRANSITION COMPLETED! Resynchronizing autonomous queue & UI.")
+                consecutivePlaybackFailures = 0
+                isNextSongPreCached = false
                 
                 // Sleep Timer Interception flags
                 var interceptForSleepTimer = false
@@ -600,49 +899,58 @@ class AudioPlaybackService : MediaSessionService() {
 
                 // Use mediaId-based resync for accuracy in Shuffle Mode
                 val transitionedMediaId = mediaItem?.mediaId
-                viewModel?.let { vm ->
-                    val songs = vm.songList.value
-                    
-                    // Find exact match by mediaId (stable song identifier)
-                    val matchedIdx = if (!transitionedMediaId.isNullOrEmpty()) {
-                        songs.indexOfFirst { it.id.toString() == transitionedMediaId }
-                    } else {
-                        -1
-                    }
-                    
-                    val nextIdx = if (matchedIdx >= 0) matchedIdx else vm.getNextSongIndex()
-                    if (nextIdx >= 0) {
-                        vm.updateSongIndexOnly(nextIdx)
-                        
-                        songs.getOrNull(nextIdx)?.let { song ->
-                            this@AudioPlaybackService.currentSong = song
-                            currentSongName = song.title
-                            currentArtist = song.artist
-                            if (song.thumbnailUrl != null) {
-                                setSongMetadataByUrl(song.title, song.thumbnailUrl, song.id.toString(), song.artist)
-                            } else {
-                                setSongMetadataById(song.title, song.albumId, song.artist)
-                            }
-                            if (!song.videoId.isNullOrEmpty()) {
-                                telemetryManager.onSongChanged(song.videoId!!, song.duration)
-                            }
-                            if (::lastFmScrobbleManager.isInitialized) {
-                                lastFmScrobbleManager.onTrackChanged(song)
-                            }
-                            PlaybackStateManager.saveState(applicationContext, song, 0L, songs, nextIdx)
-                        }
-                        
-                        if (interceptForSleepTimer) {
-                            pause()
-                            vm.setSleepTimerMode(PlayerSharedViewModel.SleepTimerMode.OFF)
-                        }
+                val songs = if (servicePlaylist.isNotEmpty()) servicePlaylist else (viewModel?.songList?.value ?: emptyList())
+                
+                // Find exact match by mediaId (stable song identifier)
+                val matchedIdx = if (!transitionedMediaId.isNullOrEmpty()) {
+                    songs.indexOfFirst { it.id.toString() == transitionedMediaId }
+                } else {
+                    -1
+                }
+                
+                val nextIdx = if (matchedIdx >= 0) matchedIdx else peekNextSongIndex()
+                if (nextIdx >= 0 && nextIdx < songs.size) {
+                    serviceCurrentIndex = nextIdx
+                    nextPredictedShuffleIndex = -1
+                    val song = songs[nextIdx]
+                    this@AudioPlaybackService.currentSong = song
+                    currentSongName = song.title
+                    currentArtist = song.artist
+                    song.id.let { servicePlayedShuffledIds.add(it) }
 
-                        updateBaseVolume()
-                        handler.postDelayed({ 
-                            preloadNextSongIntoQueue() 
-                            vm.checkQueueAndFetchMore()
-                        }, 300)
+                    // Resync source URIs to prevent onPlayerError / watchdog from retrying previous song!
+                    originalSourceUri = song.contentUri
+                    currentSourceUri = song.contentUri
+
+                    if (song.thumbnailUrl != null) {
+                        setSongMetadataByUrl(song.title, song.thumbnailUrl, song.id.toString(), song.artist)
+                    } else {
+                        setSongMetadataForLocalSong(song)
                     }
+                    if (!song.videoId.isNullOrEmpty()) {
+                        telemetryManager.onSongChanged(song.videoId!!, song.duration)
+                    }
+                    if (::lastFmScrobbleManager.isInitialized) {
+                        lastFmScrobbleManager.onTrackChanged(song)
+                    }
+                    PlaybackStateManager.saveState(applicationContext, song, 0L, songs, nextIdx)
+                    syncLiveTelemetryToDacManager()
+
+                    viewModel?.let { vm ->
+                        vm.updateSongIndexOnly(nextIdx)
+                        vm.setCurrentSong(song)
+                    }
+                    
+                    if (interceptForSleepTimer) {
+                        pause()
+                        viewModel?.setSleepTimerMode(PlayerSharedViewModel.SleepTimerMode.OFF)
+                    }
+
+                    updateBaseVolume()
+                    handler.postDelayed({ 
+                        preloadNextSongIntoQueue() 
+                        checkQueueAndFetchMore()
+                    }, 300)
                 }
             }
         }
@@ -672,6 +980,11 @@ class AudioPlaybackService : MediaSessionService() {
         com.codetrio.spatialflow.service.dac.UsbDacManager.init(this)
         com.codetrio.spatialflow.audio.dolby.DolbyAtmosManager.init(this)
         fixedLineOutVolumeManager.restoreAtStartup(com.codetrio.spatialflow.service.dac.UsbDacManager.isDacConnected.value)
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                com.codetrio.spatialflow.data.sourcepool.SourcePoolAccountManager.refreshIfNeeded(this@AudioPlaybackService)
+            } catch (_: Throwable) {}
+        }
         serviceScope.launch {
             telemetryProcessor.pipelineStats.collect { stats ->
                 com.codetrio.spatialflow.service.dac.UsbDacManager.updatePipelineStats(stats)
@@ -708,6 +1021,9 @@ class AudioPlaybackService : MediaSessionService() {
                 }
                 ACTION_TOGGLE_FAV -> {
                     viewModel?.toggleFavorite()
+                }
+                ACTION_DUMP_BIT_PERFECT_DIAGNOSTICS -> {
+                    logBitPerfectDiagnostics()
                 }
             }
         }
@@ -749,6 +1065,7 @@ class AudioPlaybackService : MediaSessionService() {
         com.codetrio.spatialflow.service.dac.UsbDacManager.clearMixerConfig()
         com.codetrio.spatialflow.audio.dolby.DolbyAtmosManager.release()
         try { hapticManager.release() } catch (_: Exception) {}
+        try { liveManager.release() } catch (_: Exception) {}
         prefListener?.let {
             appSettings.unregisterOnSharedPreferenceChangeListener(it)
         }
@@ -774,10 +1091,20 @@ class AudioPlaybackService : MediaSessionService() {
         notificationProvider = null
         invalidateArtworkBytes()
 
+        automixTriggerJob?.cancel()
+        automixTriggerJob = null
+        autoMixAnalyzer?.close()
+        autoMixAnalyzer = null
+        scheduledAutoMixPlan = null
+        AutoMixUiState.enabled.value = false
+        AutoMixUiState.mixing.value = false
+        AutoMixUiState.transitionWindow.value = null
+
         playerManager.release()
         viewModel?.cleanupBgScope()
         mediaSession?.release()
         effectsExecutor.shutdownNow()
+        releasePlaybackLocks()
         serviceScope.cancel()
     }
 
@@ -785,8 +1112,8 @@ class AudioPlaybackService : MediaSessionService() {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         audioFocusEnabled = prefs.getBoolean(KEY_AUDIO_FOCUS, true)
         Log.d(TAG, "initializePlayer: audioFocusEnabled=$audioFocusEnabled")
-        playerManager = CrossfadePlayerManager(this, serviceScope) { proc, rev, eightD, tel ->
-            buildExoPlayer(proc, rev, eightD, tel, false)
+        playerManager = CrossfadePlayerManager(this, serviceScope) { proc, rev, eightD, tel, filter ->
+            buildExoPlayer(proc, rev, eightD, tel, filter, false)
         }
         player.addListener(mainPlayerListener)
         checkAndApplyDacRouting()
@@ -850,6 +1177,47 @@ class AudioPlaybackService : MediaSessionService() {
         } else {
             com.codetrio.spatialflow.service.dac.UsbDacManager.inspectConnectedDevices()
         }
+    }
+
+    fun logBitPerfectDiagnostics(): String {
+        val src = com.codetrio.spatialflow.service.dac.UsbDacManager.liveSourceStats.value
+        val runtime = com.codetrio.spatialflow.service.dac.UsbDacManager.runtimeState.value
+        val result = runtime.bitPerfectResult
+        val dacState = com.codetrio.spatialflow.service.dac.UsbDacManager.liveDacStats.value
+        val trackTitle = currentSong?.title ?: "No track playing"
+        val trackArtist = currentSong?.artist ?: "Unknown Artist"
+
+        val diag = buildString {
+            appendLine("========== SpatialFlow Bit-Perfect Diagnostics ==========")
+            appendLine("Active Track: $trackTitle ($trackArtist)")
+            appendLine("Source Format:")
+            appendLine("  sampleRate: ${src.sampleRateHz}")
+            appendLine("  bitDepth: ${src.bitDepth}")
+            appendLine("  channelCount: ${src.channelCount}")
+            appendLine("  mimeType: ${src.mimeType}")
+            appendLine("BitPerfectResult: $result")
+            appendLine("Connected Hardware: ${dacState.deviceName} (isUsbDac=${dacState.isUsbDac})")
+            appendLine("Mixer Mode: ${dacState.mixerModeSummary}")
+            appendLine("Active Output Rate: ${runtime.outputSampleRate} Hz (${runtime.outputBitDepth}-bit)")
+            appendLine("--- Oboe AAudio Native Engine ---")
+            appendLine("Oboe Engine Available: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.isAvailable}")
+            appendLine("Oboe Stream Open: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.isStreamOpen}")
+            appendLine("Oboe Sharing Mode: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.sharingMode} (Exclusive=${com.codetrio.spatialflow.service.dac.NativeOboeEngine.isExclusive})")
+            appendLine("Oboe Audio API: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.audioApi}")
+            appendLine("Oboe Native Rate: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.actualSampleRate} Hz")
+            appendLine("Oboe Native Bit Depth: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.bitDepth}-bit")
+            appendLine("Oboe Frames Per Burst: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.framesPerBurst}")
+            appendLine("Oboe Buffer Size Frames: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.bufferSizeInFrames}")
+            appendLine("Oboe Underruns (XRuns): ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.underflowCount}")
+            appendLine("Oboe Last Result/Error: ${com.codetrio.spatialflow.service.dac.NativeOboeEngine.lastError}")
+            appendLine("Pure Music Mode: All Effects Stripped=${playerManager.isDspBypassed} (Unity Volume=1.0f)")
+            appendLine("--- adb dumpsys command (active track extraction) ---")
+            appendLine("Command: adb shell dumpsys audio")
+            appendLine("Alternative: adb shell dumpsys media.audio_flinger")
+            appendLine("=========================================================")
+        }
+        Log.i(TAG, diag)
+        return diag
     }
 
     internal val fixedLineOutVolumeManager by lazy {
@@ -931,8 +1299,8 @@ class AudioPlaybackService : MediaSessionService() {
                 playerManager.nextPlayer?.setPreferredAudioDevice(null)
             }
 
-            if (shouldBypassDsp) {
-                playerManager.releaseAllAudioEffects()
+            if (shouldBypassDsp || dacConnected) {
+                playerManager.stripAllEffectsForDac()
                 broadcastAudioEffectSession(false)
             }
 
@@ -946,6 +1314,8 @@ class AudioPlaybackService : MediaSessionService() {
         playerManager.nextTelemetryProcessor?.isDspBypassed = shouldBypassDsp
         playerManager.mainProcessor.enabled = !shouldBypassDsp
         playerManager.nextProcessor?.enabled = !shouldBypassDsp
+        playerManager.mainTransitionFilter.isDspBypassed = shouldBypassDsp
+        playerManager.nextTransitionFilter?.isDspBypassed = shouldBypassDsp
 
         applyDacVolumeSettings()
     }
@@ -960,6 +1330,7 @@ class AudioPlaybackService : MediaSessionService() {
         reverb: ReverbAudioProcessor,
         eightD: EightDAudioProcessor,
         telemetry: com.codetrio.spatialflow.service.dac.AudioTelemetryProcessor,
+        filter: AutoMixFilterProcessor,
         handleAudioFocus: Boolean
     ): ExoPlayer {
         val renderersFactory = object : androidx.media3.exoplayer.DefaultRenderersFactory(this) {
@@ -973,20 +1344,20 @@ class AudioPlaybackService : MediaSessionService() {
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean
             ): androidx.media3.exoplayer.audio.AudioSink {
-                // TODO(AudioPlaybackService.kt:925): DefaultAudioSink is built once; a mode change requires rebuilding the player or the sink.
-                return androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                val fallbackSink = androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
                     .setEnableFloatOutput(!isBitPerfectNow())
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                     .setAudioProcessorChain(
                         com.codetrio.spatialflow.service.dac.BitPerfectAudioProcessorChain(
                             telemetryProcessor = telemetry,
-                            dspProcessors = arrayOf(eightD, reverb, processor)
+                            dspProcessors = arrayOf(eightD, reverb, processor, filter)
                         ) {
                             (if (::playerManager.isInitialized) playerManager.isDspBypassed else false) ||
                                 com.codetrio.spatialflow.util.QualityModeSelector.isBitPerfectActive(this@AudioPlaybackService)
                         }
                     )
                     .build()
+                return com.codetrio.spatialflow.service.dac.OboeAudioSink(fallbackSink)
             }
 
             override fun buildVideoRenderers(
@@ -1046,12 +1417,19 @@ class AudioPlaybackService : MediaSessionService() {
                 loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
                 mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData
             ) {
-                val dataLen = loadEventInfo.dataSpec.length
-                if (dataLen > 0 && currentStreamContentLength <= 0) {
-                    currentStreamContentLength = dataLen
-                    val dur = player.duration
-                    if (dur > 0) {
-                        computeAndApplyRealBitrate(dataLen, dur)
+                // Only active player updates stream length, and only for local files where dataSpec.length is the complete file.
+                // HTTP streaming chunks (typically ~1.3MB) must NEVER be treated as the total song content length!
+                if (playerInstance == player) {
+                    val uri = currentSourceUri
+                    if (uri != null && uri.scheme != "http" && uri.scheme != "https") {
+                        val dataLen = loadEventInfo.dataSpec.length
+                        if (dataLen > 0 && currentStreamContentLength <= 0) {
+                            currentStreamContentLength = dataLen
+                            val dur = player.duration
+                            if (dur > 0) {
+                                computeAndApplyRealBitrate(dataLen, dur)
+                            }
+                        }
                     }
                 }
             }
@@ -1061,43 +1439,38 @@ class AudioPlaybackService : MediaSessionService() {
                 format: androidx.media3.common.Format,
                 decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?
             ) {
-                val sampleRate = format.sampleRate
-                val bitDepth = when (format.pcmEncoding) {
-                    C.ENCODING_PCM_24BIT -> 24
-                    C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT -> 32
-                    C.ENCODING_PCM_16BIT -> 16
-                    else -> if (format.sampleMimeType?.contains("flac", ignoreCase = true) == true) 24 else 16
-                }
-                val rawBitrateBps = if (format.bitrate > 0) format.bitrate else 0
-                val existingBitrate = com.codetrio.spatialflow.service.dac.UsbDacManager.liveSourceStats.value.bitrateBps
-                val finalBitrateBps = if (rawBitrateBps > 0) rawBitrateBps else existingBitrate
+                // Only the currently active player pushes telemetry and updates format.
+                // Preloading nextPlayer in AutoMix must never pollute active track telemetry!
+                if (playerInstance == player) {
+                    val sampleRate = format.sampleRate
+                    val bitDepth = when (format.pcmEncoding) {
+                        C.ENCODING_PCM_24BIT -> 24
+                        C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT -> 32
+                        C.ENCODING_PCM_16BIT -> 16
+                        else -> if (format.sampleMimeType?.contains("flac", ignoreCase = true) == true) 24 else 16
+                    }
+                    val rawBitrateBps = if (format.bitrate > 0) format.bitrate else 0
+                    val existingBitrate = com.codetrio.spatialflow.service.dac.UsbDacManager.liveSourceStats.value.bitrateBps
+                    val finalBitrateBps = if (rawBitrateBps > 0) rawBitrateBps else existingBitrate
 
-                com.codetrio.spatialflow.service.dac.UsbDacManager.updateSourceStats(
-                    com.codetrio.spatialflow.service.dac.SourceAudioStats(
-                        mimeType = format.sampleMimeType ?: "audio/raw",
-                        sampleRateHz = sampleRate,
-                        bitDepth = bitDepth,
-                        channelCount = format.channelCount,
-                        bitrateBps = finalBitrateBps
+                    syncLiveTelemetryToDacManager()
+                    
+                    val isAtmosFormat = with(com.codetrio.spatialflow.audio.dolby.DolbyAtmosExtensions) {
+                        format.isDolbyAtmos()
+                    }
+                    val curSong = viewModel?.currentSong?.value
+                    val hasAtmos = isAtmosFormat || curSong?.hasDolbyAtmos == true
+                    com.codetrio.spatialflow.audio.dolby.DolbyAtmosManager.updateCurrentTrackAtmosStatus(
+                        hasAtmosStream = hasAtmos,
+                        mimeType = format.sampleMimeType,
+                        channelCount = format.channelCount
                     )
-                )
-                com.codetrio.spatialflow.service.dac.UsbDacManager.updateTrackFormat(sampleRate, bitDepth, format.channelCount)
-                
-                val isAtmosFormat = with(com.codetrio.spatialflow.audio.dolby.DolbyAtmosExtensions) {
-                    format.isDolbyAtmos()
-                }
-                val curSong = viewModel?.currentSong?.value
-                val hasAtmos = isAtmosFormat || curSong?.hasDolbyAtmos == true
-                com.codetrio.spatialflow.audio.dolby.DolbyAtmosManager.updateCurrentTrackAtmosStatus(
-                    hasAtmosStream = hasAtmos,
-                    mimeType = format.sampleMimeType,
-                    channelCount = format.channelCount
-                )
 
-                checkAndApplyDacRouting()
+                    checkAndApplyDacRouting()
 
-                if (currentStreamContentLength > 0 && player.duration > 0) {
-                    computeAndApplyRealBitrate(currentStreamContentLength, player.duration)
+                    if (currentStreamContentLength > 0 && player.duration > 0) {
+                        computeAndApplyRealBitrate(currentStreamContentLength, player.duration)
+                    }
                 }
             }
         })
@@ -1177,37 +1550,117 @@ class AudioPlaybackService : MediaSessionService() {
 
         Log.d(TAG, "Calculated real streaming VBR bitrate: $kbps kbps (bytes: $totalBytes, duration: ${durationMs}ms)")
 
-        // Update live source telemetry stats
-        val currentSource = com.codetrio.spatialflow.service.dac.UsbDacManager.liveSourceStats.value
-        com.codetrio.spatialflow.service.dac.UsbDacManager.updateSourceStats(
-            currentSource.copy(bitrateBps = kbps * 1000)
-        )
-
         // Re-derive active format tag with real bitrate
         val currentTag = resolvedStreamFormatTag.ifEmpty { getActiveAudioFormat() }
+        val currentSource = com.codetrio.spatialflow.service.dac.UsbDacManager.liveSourceStats.value
+
         val codec = when {
             currentTag.contains("FLAC", ignoreCase = true) || currentSource.mimeType.contains("flac", ignoreCase = true) -> "FLAC"
             currentTag.contains("WAV", ignoreCase = true) || currentSource.mimeType.contains("wav", ignoreCase = true) -> "WAV"
             currentTag.contains("OPUS", ignoreCase = true) || currentSource.mimeType.contains("opus", ignoreCase = true) -> "OPUS"
-            currentTag.contains("AAC", ignoreCase = true) || currentSource.mimeType.contains("mp4a", ignoreCase = true) -> "AAC"
+            currentTag.contains("AAC", ignoreCase = true) || currentSource.mimeType.contains("mp4a", ignoreCase = true) || currentSource.mimeType.contains("aac", ignoreCase = true) -> "AAC"
             currentTag.contains("MP3", ignoreCase = true) || currentSource.mimeType.contains("mpeg", ignoreCase = true) -> "MP3"
-            else -> "FLAC"
+            else -> detectFormatFromExoPlayer().split("•").firstOrNull()?.trim()?.takeIf { it.isNotBlank() } ?: "OPUS"
         }
 
         val isLossless = codec == "FLAC" || codec == "WAV"
-        val newTag = if (isLossless) {
-            if (currentSource.bitDepth >= 24) {
-                val sampleRateKhz = if (currentSource.sampleRateHz > 0) "${currentSource.sampleRateHz / 1000}kHz" else "Hi-Res"
-                "$codec • 24-bit $sampleRateKhz • $kbps kbps"
-            } else {
-                "$codec • Lossless • $kbps kbps"
+
+        // Sanity guard: A genuine Lossless/FLAC file cannot mathematically be less than 350 kbps.
+        // If kbps < 350, it is guaranteed to be an HTTP chunk artifact or lossy stream. Never label it as Lossless or Hi-Res!
+        if (isLossless && kbps < 350) {
+            Log.w(TAG, "Rejecting implausible lossless bitrate $kbps kbps (bytes: $totalBytes) - preserving existing tag: $currentTag")
+            return
+        }
+
+        // Update live source telemetry stats with verified bitrate
+        com.codetrio.spatialflow.service.dac.UsbDacManager.updateSourceStats(
+            currentSource.copy(bitrateBps = kbps * 1000)
+        )
+
+        // If the current tag is an authoritative provider resolution (e.g. Tidal Direct, Qobuz, Deezer, MLS, JioSaavn),
+        // preserve the provider info and update/append the real bitrate cleanly.
+        val newTag = when {
+            currentTag.contains("Tidal", true) || currentTag.contains("Qobuz", true) || currentTag.contains("Deezer", true) || currentTag.contains("MLS", true) -> {
+                if (currentTag.contains("kbps")) {
+                    currentTag.replace(Regex("""\d+[\s,]*kbps"""), "$kbps kbps")
+                } else {
+                    "$currentTag • $kbps kbps"
+                }
             }
-        } else {
-            "$codec • $kbps kbps"
+            isLossless -> {
+                val isHiRes = currentSource.bitDepth >= 24 || currentSource.sampleRateHz > 48000
+                if (isHiRes && kbps >= 600) {
+                    val sampleRateKhz = if (currentSource.sampleRateHz > 0) "${currentSource.sampleRateHz / 1000}kHz" else "Hi-Res"
+                    "$codec • 24-bit $sampleRateKhz • $kbps kbps"
+                } else {
+                    "$codec • Lossless • $kbps kbps"
+                }
+            }
+            else -> {
+                "$codec • $kbps kbps"
+            }
         }
 
         setResolvedStreamFormat(newTag)
         viewModel?.updatePlaybackFormat(newTag)
+        syncLiveTelemetryToDacManager()
+    }
+
+    fun syncLiveTelemetryToDacManager() {
+        val song = currentSong ?: (viewModel?.currentSongIndex?.value?.let { idx ->
+            viewModel?.songList?.value?.getOrNull(idx)
+        } ?: viewModel?.currentSong?.value)
+        val fmt = player.audioFormat
+        val currentSource = com.codetrio.spatialflow.service.dac.UsbDacManager.liveSourceStats.value
+
+        val sampleRate = if ((fmt?.sampleRate ?: 0) > 0) fmt!!.sampleRate else (currentSource.sampleRateHz.takeIf { it > 0 } ?: 44100)
+        val bitDepth = when (fmt?.pcmEncoding) {
+            C.ENCODING_PCM_24BIT -> 24
+            C.ENCODING_PCM_32BIT, C.ENCODING_PCM_FLOAT -> 32
+            C.ENCODING_PCM_16BIT -> 16
+            else -> if (fmt?.sampleMimeType?.contains("flac", ignoreCase = true) == true) 24 else (currentSource.bitDepth.takeIf { it > 0 } ?: 16)
+        }
+        val channels = if ((fmt?.channelCount ?: 0) > 0) fmt!!.channelCount else (currentSource.channelCount.takeIf { it > 0 } ?: 2)
+
+        val activeTag = resolvedStreamFormatTag.ifEmpty { getActiveAudioFormat() }
+        val rawMime = fmt?.sampleMimeType
+            ?: (if (activeTag.contains("FLAC", true)) "audio/flac"
+            else if (activeTag.contains("OPUS", true)) "audio/opus"
+            else if (activeTag.contains("AAC", true)) "audio/mp4a-latm"
+            else if (activeTag.contains("MP3", true)) "audio/mpeg"
+            else currentSource.mimeType.takeIf { it != "Unknown" } ?: "audio/raw")
+
+        val codecName = when {
+            activeTag.contains("FLAC", ignoreCase = true) || rawMime.contains("flac", ignoreCase = true) -> "FLAC"
+            activeTag.contains("OPUS", ignoreCase = true) || rawMime.contains("opus", ignoreCase = true) -> "OPUS"
+            activeTag.contains("AAC", ignoreCase = true) || rawMime.contains("mp4a", ignoreCase = true) || rawMime.contains("aac", ignoreCase = true) -> "AAC"
+            activeTag.contains("MP3", ignoreCase = true) || rawMime.contains("mpeg", ignoreCase = true) -> "MP3"
+            activeTag.contains("WAV", ignoreCase = true) || rawMime.contains("wav", ignoreCase = true) -> "WAV"
+            else -> detectFormatFromExoPlayer().split("•").firstOrNull()?.trim().takeIf { !it.isNullOrBlank() } ?: "PCM"
+        }
+
+        val calculatedBps = if (currentStreamContentLength > 0 && player.duration > 0) {
+            ((currentStreamContentLength * 8) / (player.duration / 1000.0)).toInt()
+        } else {
+            fmt?.bitrate?.takeIf { it > 0 } ?: currentSource.bitrateBps
+        }
+        val finalBitrateBps = if (calculatedBps > 0) calculatedBps else currentSource.bitrateBps
+
+        com.codetrio.spatialflow.service.dac.UsbDacManager.updateSourceStats(
+            com.codetrio.spatialflow.service.dac.SourceAudioStats(
+                title = song?.title,
+                artist = song?.artist,
+                codec = codecName,
+                formatTag = activeTag.ifEmpty { "$codecName • $bitDepth-bit ${sampleRate / 1000.0}kHz" },
+                mimeType = rawMime,
+                sampleRateHz = sampleRate,
+                bitDepth = bitDepth,
+                channelCount = channels,
+                bitrateBps = finalBitrateBps,
+                isPlaying = player.isPlaying
+            )
+        )
+        com.codetrio.spatialflow.service.dac.UsbDacManager.updateTrackFormat(sampleRate, bitDepth, channels)
     }
 
     private fun probeStreamContentLength(uri: Uri, targetDurationMs: Long = 0L) {
@@ -1469,7 +1922,14 @@ class AudioPlaybackService : MediaSessionService() {
         return result
     }
 
-    fun setViewModel(vm: PlayerSharedViewModel) {
+    fun setViewModel(vm: PlayerSharedViewModel?) {
+        if (vm == null) {
+            viewModelObservationJob?.cancel()
+            viewModelObservationJob = null
+            this.viewModel = null
+            Log.d(TAG, "ViewModel detached from AudioPlaybackService (autonomous background playback continues)")
+            return
+        }
         val oldVm = this.viewModel
         if (oldVm != null && oldVm !== vm) {
             // Memory Leak Extermination: 
@@ -1480,14 +1940,27 @@ class AudioPlaybackService : MediaSessionService() {
         }
         this.viewModel = vm
         vm.hapticManager = hapticManager
+
+        // Bidirectional synchronization: sync autonomous service state back to the newly attached ViewModel!
+        if (servicePlaylist.isNotEmpty()) {
+            vm.syncFromService(
+                songs = servicePlaylist,
+                currentIndex = serviceCurrentIndex,
+                currentSong = currentSong,
+                isPlaying = player.isPlaying
+            )
+        }
         
-        player.shuffleModeEnabled = vm.isShuffleEnabled.value
+        player.shuffleModeEnabled = serviceShuffleEnabled
+        vm.setShuffleEnabled(serviceShuffleEnabled)
+        vm.setRepeatMode(serviceRepeatMode)
         
         // Single observation tree (Directives #3 & #6)
         viewModelObservationJob?.cancel()
         viewModelObservationJob = serviceScope.launch {
             launch {
                 vm.repeatMode.collect { mode ->
+                    serviceRepeatMode = mode
                     val exoMode = when (mode) {
                         PlayerSharedViewModel.REPEAT_ONE -> Player.REPEAT_MODE_ONE
                         PlayerSharedViewModel.REPEAT_ALL -> Player.REPEAT_MODE_ALL
@@ -1506,10 +1979,31 @@ class AudioPlaybackService : MediaSessionService() {
             }
             launch {
                 vm.isShuffleEnabled.collect { enabled ->
+                    serviceShuffleEnabled = enabled
                     if (player.shuffleModeEnabled != enabled) {
                         player.shuffleModeEnabled = enabled
                     }
+                    nextPredictedShuffleIndex = -1
                     updateMediaSessionCustomLayout()
+                }
+            }
+            launch {
+                vm.isAutoplayEnabled.collect { enabled ->
+                    serviceAutoplayEnabled = enabled
+                }
+            }
+            launch {
+                vm.songList.collect { songs ->
+                    if (songs.isNotEmpty() && songs != servicePlaylist) {
+                        servicePlaylist = songs
+                    }
+                }
+            }
+            launch {
+                vm.currentSongIndex.collect { idx ->
+                    if (idx in servicePlaylist.indices && idx != serviceCurrentIndex) {
+                        serviceCurrentIndex = idx
+                    }
                 }
             }
         }
@@ -1539,7 +2033,9 @@ class AudioPlaybackService : MediaSessionService() {
             val videoId = uri.host ?: return
 
             // Check if pre-resolved stream or local downloaded file exists
-            val targetSong = viewModel?.songList?.value?.find { it.videoId == videoId || it.id.toString() == videoId }
+            val targetSong = servicePlaylist.find { it.videoId == videoId || it.id.toString() == videoId }
+                             ?: viewModel?.songList?.value?.find { it.videoId == videoId || it.id.toString() == videoId }
+                             ?: this@AudioPlaybackService.currentSong
                              ?: viewModel?.currentSong?.value
             val preResolvedUri = targetSong?.let { queuePreloader.getResolvedUri(it.id) }
             if (preResolvedUri != null) {
@@ -1554,6 +2050,7 @@ class AudioPlaybackService : MediaSessionService() {
             resolveJob?.cancel()
             resolveTargetSongId = videoId
 
+            acquirePlaybackLocks() // Keep CPU awake during network stream resolution!
             resolveJob = serviceScope.launch {
                 // The offline-file lookup hits MediaStore and stats external storage, which can
                 // block for tens of milliseconds. It used to run inline on the main thread here
@@ -1600,7 +2097,8 @@ class AudioPlaybackService : MediaSessionService() {
                         title = targetSong?.title,
                         artist = targetSong?.artist,
                         overridePreferOpus = overrideOpus,
-                        isRetry = isRetry
+                        isRetry = isRetry,
+                        durationMs = targetSong?.duration?.takeIf { it > 0 }
                     )
                 }
                 val streamUrl = (streamResult as? com.codetrio.spatialflow.domain.error.Result.Success)?.data
@@ -1661,7 +2159,7 @@ class AudioPlaybackService : MediaSessionService() {
                         viewModel?.setIsPlaying(false)
                     } else {
                         handler.postDelayed({
-                            viewModel?.playNextSong(true)
+                            playNext(force = true)
                         }, 600)
                     }
                 }
@@ -1700,12 +2198,11 @@ class AudioPlaybackService : MediaSessionService() {
      * in background and adding it to the pipeline BEFORE the current track completes.
      */
     private fun preloadNextSongIntoQueue() {
-        val vm = viewModel ?: return
-        val songs = vm.songList.value
+        val songs = if (servicePlaylist.isNotEmpty()) servicePlaylist else (viewModel?.songList?.value ?: emptyList())
         if (songs.isEmpty()) return
         
-        // Shuffle-aware next index prediction
-        val nextIndex = vm.getNextSongIndex() 
+        // Shuffle-aware next index prediction (idempotent across calls)
+        val nextIndex = peekNextSongIndex() 
         if (nextIndex < 0 || nextIndex >= songs.size) {
             return
         }
@@ -1713,11 +2210,11 @@ class AudioPlaybackService : MediaSessionService() {
         val nextSong = songs[nextIndex]
         Log.d(TAG, "Initializing proactive queue preloading for native transition: ${nextSong.title}")
 
-        val currentIdx = vm.currentSongIndex.value
+        val currentIdx = if (serviceCurrentIndex in songs.indices) serviceCurrentIndex else (viewModel?.currentSongIndex?.value ?: 0)
         val mode = com.codetrio.spatialflow.util.QualityModeSelector.getActiveQualityMode(applicationContext)
         val depth = com.codetrio.spatialflow.util.QualityModeSelector.getPreloadDepth(mode)
 
-        queuePreloader.updatePreloadQueue(songs, currentIdx, depth = 1)
+        queuePreloader.updatePreloadQueue(songs, currentIdx, depth = 1, explicitNextSong = nextSong)
         artworkPreloader.preloadQueueArtwork(songs, currentIdx, lookaheadDepth = 1)
 
         preloadJob?.cancel()
@@ -1725,7 +2222,8 @@ class AudioPlaybackService : MediaSessionService() {
             var nextUri = nextSong.contentUri
 
             // 1. Check pre-resolved cache, local download & resolve if online source
-            val targetVideoId = nextSong.videoId
+            val targetVideoId = nextSong.videoId?.ifBlank { null }
+                ?: (if (nextSong.contentUri.scheme == "innertube") nextSong.contentUri.host else null)
             val preResolved = queuePreloader.getResolvedUri(nextSong.id)
             if (preResolved != null) {
                 nextUri = preResolved
@@ -1740,15 +2238,18 @@ class AudioPlaybackService : MediaSessionService() {
                     nextUri = localUri
                     Log.d(TAG, "Preloader redirected next song to local offline file: $localUri")
                 } else if (!targetVideoId.isNullOrEmpty()) {
+                    acquirePlaybackLocks() // Keep CPU awake during network stream resolution!
                     val resolvedUrl = withContext(Dispatchers.IO) {
                         YouTubeMusic.getStreamUrl(
                             videoId = targetVideoId,
                             title = nextSong.title,
-                            artist = nextSong.artist
+                            artist = nextSong.artist,
+                            durationMs = nextSong.duration.takeIf { it > 0 }
                         ).getOrNull()
                     }
                     if (!resolvedUrl.isNullOrEmpty()) {
                         nextUri = resolvedUrl.toUri()
+                        queuePreloader.putResolvedUri(nextSong.id, nextUri)
                         Log.d(TAG, "Next track stream URL pre-resolved successfully")
 
                         // First-chunk byte pre-caching: only on unmetered/Wi-Fi to prevent cellular bandwidth starvation
@@ -1765,27 +2266,41 @@ class AudioPlaybackService : MediaSessionService() {
             withContext(Dispatchers.Main) {
                 // Safety Verification: confirm job is active & target next song hasn't changed
                 ensureActive()
-                val currentVm = viewModel ?: return@withContext
-                val currentNextIdx = currentVm.getNextSongIndex()
-                val currentNextSong = currentVm.songList.value.getOrNull(currentNextIdx)
+                val activeSongs = if (servicePlaylist.isNotEmpty()) servicePlaylist else (viewModel?.songList?.value ?: emptyList())
+                val currentNextIdx = peekNextSongIndex()
+                val currentNextSong = activeSongs.getOrNull(currentNextIdx)
                 if (currentNextSong?.id != nextSong.id) {
                     Log.d(TAG, "Preload target song changed from ${nextSong.title} to ${currentNextSong?.title}, aborting stale queue mutation")
                     return@withContext
                 }
 
-                if (crossfadeDurationMs > 0) {
+                val isGaplessAlbum = autoMixEnabled && scheduledAutoMixPlan?.style == AutoMixStyle.GAPLESS
+                val shouldMix = (crossfadeDurationMs > 0 || autoMixEnabled) && !isGaplessAlbum
+
+                if (shouldMix) {
                     if (nextUri.scheme != "innertube") {
+                        val cueMs = scheduledAutoMixPlan?.incomingCueMs ?: 0L
                         playerManager.prepareNextPlayer(
                             uri = nextUri,
                             title = nextSong.title,
                             artist = nextSong.artist,
                             mediaId = nextSong.id.toString(),
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            cueTimeMs = cueMs
                         ) { wrapper ->
                             handler.post {
                                 playerManager.cancelCrossfade()
                             }
                         }
+                        // If AutoMix plan is active and position is already past transition start, trigger immediately!
+                        val plan = scheduledAutoMixPlan
+                        if (plan != null && autoMixEnabled && !isCrossfading && !isBitPerfectNow() && player.currentPosition >= plan.transitionStartMs) {
+                            attemptTriggerAutoMix(plan)
+                        }
+                    }
+                    if (autoMixEnabled && !isBitPerfectNow()) {
+                        val trackId = nextSong.videoId?.ifBlank { null } ?: nextSong.id.toString()
+                        getAutoMixAnalyzer().request(trackId, nextUri, nextSong.duration)
                     }
                 } else {
                     if (player.mediaItemCount < 2 && nextUri.scheme != "innertube") {
@@ -1905,14 +2420,158 @@ class AudioPlaybackService : MediaSessionService() {
         }
         if (isProcessing) pendingSeekPos = position.toLong()
         player.seekTo(position.toLong())
+
+        val dur = player.duration
+        val pos = position.toLong()
+        if (dur > 0) {
+            viewModel?.setCurrentPosition(position)
+            if (autoMixEnabled && !isBitPerfectNow()) {
+                automixTriggerJob?.cancel()
+                automixTriggerJob = null
+                if (nextPlayer == null) {
+                    preloadNextSongIntoQueue()
+                }
+                lastTelemetryUpdateMs = 0L
+                scheduledAutoMixPlan = null // Reset so new plan recalculates for seek target
+                scheduleAutoMix(pos, dur)
+            } else if (crossfadeDurationMs > 0 && !isBitPerfectNow()) {
+                if (nextPlayer == null) {
+                    preloadNextSongIntoQueue()
+                }
+                lastTelemetryUpdateMs = 0L
+                checkPlaybackMilestones(pos, dur)
+            }
+        }
     }
 
-    fun playPrevious() = viewModel?.playPreviousSong()
-    fun playNext() {
-        if (crossfadeDurationMs > 0 && nextPlayer != null && !isCrossfading) {
-            startCrossfadeOut()
+    fun playSongAtIndex(index: Int) {
+        val songs = if (servicePlaylist.isNotEmpty()) servicePlaylist else (viewModel?.songList?.value ?: emptyList())
+        if (index !in songs.indices) {
+            Log.w(TAG, "playSongAtIndex: Invalid index $index for playlist of size ${songs.size}")
+            return
+        }
+        servicePlaylist = songs
+        serviceCurrentIndex = index
+        nextPredictedShuffleIndex = -1
+        val song = songs[index]
+        currentSong = song
+        currentSongName = song.title
+        currentArtist = song.artist
+        song.id.let { servicePlayedShuffledIds.add(it) }
+
+        if (song.thumbnailUrl != null) {
+            setSongMetadataByUrl(song.title, song.thumbnailUrl, song.id.toString(), song.artist)
         } else {
-            viewModel?.playNextSong()
+            setSongMetadataForLocalSong(song)
+        }
+        if (!song.videoId.isNullOrEmpty()) {
+            telemetryManager.onSongChanged(song.videoId!!, song.duration)
+        }
+        if (::lastFmScrobbleManager.isInitialized) {
+            lastFmScrobbleManager.onTrackChanged(song)
+        }
+        PlaybackStateManager.saveState(applicationContext, song, 0L, songs, index)
+        syncLiveTelemetryToDacManager()
+
+        viewModel?.let { vm ->
+            vm.updateSongIndexOnly(index)
+            vm.setCurrentSong(song)
+        }
+
+        var uri = song.contentUri
+        if (!song.videoId.isNullOrEmpty() && uri.scheme != "innertube" && uri.scheme != "file" && uri.scheme != "content") {
+            uri = "innertube://${song.videoId}".toUri()
+        }
+
+        acquirePlaybackLocks()
+        loadAndPlay(uri)
+        checkQueueAndFetchMore()
+    }
+
+    fun playPrevious() {
+        val songs = if (servicePlaylist.isNotEmpty()) servicePlaylist else (viewModel?.songList?.value ?: emptyList())
+        if (songs.isEmpty()) {
+            viewModel?.playPreviousSong()
+            return
+        }
+
+        val pos = player.currentPosition
+        if (pos > 3000) {
+            player.seekTo(0)
+            return
+        }
+
+        val prevIndex = if (serviceShuffleEnabled && songs.size > 1) {
+            var prev = serviceCurrentIndex
+            var attempts = 0
+            while (prev == serviceCurrentIndex && attempts < 10) {
+                prev = shuffleRandom.nextInt(songs.size)
+                attempts++
+            }
+            prev
+        } else {
+            val p = serviceCurrentIndex - 1
+            if (p < 0) {
+                if (serviceRepeatMode == PlayerSharedViewModel.REPEAT_ALL) songs.size - 1 else 0
+            } else p
+        }
+
+        if (prevIndex in songs.indices) {
+            playSongAtIndex(prevIndex)
+        }
+    }
+
+    fun playNext(force: Boolean = false) {
+        if (scheduledAutoMixPlan != null && nextPlayer != null && !isCrossfading && !isBitPerfectNow()) {
+            val plan = scheduledAutoMixPlan!!
+            scheduledAutoMixPlan = null
+            playerManager.crossfadeDurationMs = plan.fadeMs.toInt()
+            startCrossfadeOut(plan)
+            return
+        } else if (crossfadeDurationMs > 0 && nextPlayer != null && !isCrossfading) {
+            startCrossfadeOut()
+            return
+        }
+
+        val songs = if (servicePlaylist.isNotEmpty()) servicePlaylist else (viewModel?.songList?.value ?: emptyList())
+        if (songs.isEmpty()) {
+            viewModel?.playNextSong(force)
+            return
+        }
+
+        viewModel?.let { vm ->
+            if (!force) {
+                if (vm.sleepTimerMode.value == PlayerSharedViewModel.SleepTimerMode.END_OF_SONG) {
+                    pause()
+                    vm.setSleepTimerMode(PlayerSharedViewModel.SleepTimerMode.OFF)
+                    return
+                }
+                if (vm.sleepTimerMode.value == PlayerSharedViewModel.SleepTimerMode.END_OF_QUEUE && serviceCurrentIndex == songs.size - 1) {
+                    pause()
+                    vm.setSleepTimerMode(PlayerSharedViewModel.SleepTimerMode.OFF)
+                    return
+                }
+            }
+        }
+
+        val nextIndex = peekNextSongIndex(ignoreRepeatOne = force)
+        if (nextIndex >= 0 && nextIndex < songs.size) {
+            playSongAtIndex(nextIndex)
+        } else if (serviceAutoplayEnabled) {
+            fetchAutoplayContinuation { success ->
+                if (success) {
+                    val newNextIndex = peekNextSongIndex(ignoreRepeatOne = true)
+                    if (newNextIndex in servicePlaylist.indices) {
+                        playSongAtIndex(newNextIndex)
+                    } else {
+                        pause()
+                    }
+                } else {
+                    pause()
+                }
+            }
+        } else {
+            pause()
         }
     }
 
@@ -1937,7 +2596,7 @@ class AudioPlaybackService : MediaSessionService() {
     }
 
     internal fun buildMediaItem(uri: Uri): MediaItem {
-        val currentSong = viewModel?.currentSong?.value
+        val currentSong = this.currentSong ?: viewModel?.currentSong?.value
         val songId = currentSong?.id?.toString() ?: ""
         if (currentSong != null) {
             currentSongName = currentSong.title
@@ -2127,6 +2786,23 @@ class AudioPlaybackService : MediaSessionService() {
         refreshNotification()
     }
 
+    fun setSongMetadataForLocalSong(song: com.codetrio.spatialflow.model.SongItem) {
+        if (!song.artist.isNullOrBlank()) {
+            this.currentArtist = song.artist
+        }
+        serviceScope.launch(Dispatchers.IO) {
+            val albumArt = com.codetrio.spatialflow.util.AudioArtworkFetcher.extractArtworkBitmap(
+                applicationContext,
+                song.getAlbumArtUri() ?: song.contentUri,
+                targetWidth = 1024,
+                targetHeight = 1024
+            )
+            withContext(Dispatchers.Main) {
+                setSongMetadata(song.title, albumArt, song.artist)
+            }
+        }
+    }
+
     @JvmOverloads
     fun setSongMetadataById(songName: String?, albumId: Long, artistName: String? = null) {
         if (!artistName.isNullOrBlank()) {
@@ -2137,7 +2813,12 @@ class AudioPlaybackService : MediaSessionService() {
             if (albumId > 0) {
                 try {
                     val artUri = "content://media/external/audio/albumart/$albumId".toUri()
-                    albumArt = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    albumArt = com.codetrio.spatialflow.util.AudioArtworkFetcher.extractArtworkBitmap(
+                        applicationContext,
+                        artUri,
+                        targetWidth = 1024,
+                        targetHeight = 1024
+                    ) ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         contentResolver.loadThumbnail(artUri, Size(1024, 1024), null)
                     } else {
                         @Suppress("DEPRECATION") MediaStore.Images.Media.getBitmap(contentResolver, artUri)
@@ -2315,6 +2996,10 @@ class AudioPlaybackService : MediaSessionService() {
             playerManager.cancelCrossfade()
         }
 
+        scheduledAutoMixPlan = null
+        AutoMixUiState.mixing.value = false
+        AutoMixUiState.transitionWindow.value = null
+
         currentSourceUri = uri
         hasProcessed8D = false
         isNextSongPreCached = false
@@ -2344,6 +3029,11 @@ class AudioPlaybackService : MediaSessionService() {
             }
             
             player.setMediaItem(buildMediaItem(uri))
+            
+            if (autoMixEnabled && !isBitPerfectNow() && currentSong != null && durMs > 0) {
+                val trackId = currentSong.videoId?.ifBlank { null } ?: currentSong.id.toString()
+                getAutoMixAnalyzer().request(trackId, uri, durMs)
+            }
             
             // Seek BEFORE prepare to avoid double-buffering pass
             if (pendingSeekPos >= 0) {
@@ -2426,7 +3116,7 @@ class AudioPlaybackService : MediaSessionService() {
     }
 
     private fun checkPlaybackMilestones(pos: Long, dur: Long) {
-        if (!player.isPlaying || dur <= 0) return
+        if ((!player.isPlaying && !player.playWhenReady) || dur <= 0) return
 
         // 1. Predictive Pre-Caching at 70% threshold (triggered once per track, giving ample time for lossless stream resolution)
         if (!isNextSongPreCached && (pos.toFloat() / dur.toFloat() >= 0.70f)) {
@@ -2434,8 +3124,10 @@ class AudioPlaybackService : MediaSessionService() {
             triggerPreCacheNextSong()
         }
 
-        // 2. Smart Crossfade Start Detection
-        if (crossfadeDurationMs > 0 && !isCrossfading && pos > 5000 && pos > dur / 2) {
+        // 2. Automix or Smart Crossfade Start Detection
+        if (autoMixEnabled && !isBitPerfectNow()) {
+            scheduleAutoMix(pos, dur)
+        } else if (crossfadeDurationMs > 0 && !isCrossfading && pos > 5000 && pos > dur / 2) {
             val tenPercentOfSong = (dur / 10).toInt()
             val targetCrossfadeMs = crossfadeDurationMs.coerceAtMost(tenPercentOfSong).coerceAtLeast(1000)
             if ((dur - pos) <= targetCrossfadeMs) {
@@ -2450,6 +3142,7 @@ class AudioPlaybackService : MediaSessionService() {
             override fun run() {
                 val isPlaying = player.isPlaying
                 val isMounted = viewModel?.isSliderUiMounted?.value ?: false
+                var nearCrossfadeWindow = false
 
                 if (player.playbackState != Player.STATE_IDLE && player.playbackState != Player.STATE_ENDED) {
                     val pos = if (isCrossfading && nextPlayer != null) nextPlayer!!.currentPosition else player.currentPosition
@@ -2457,9 +3150,14 @@ class AudioPlaybackService : MediaSessionService() {
                     viewModel?.setCurrentPosition(pos.toInt())
                     if (dur > 0) viewModel?.setDuration(dur.toInt())
 
-                    // Throttle low-frequency milestone checks and telemetry to ~1 second interval
+                    if (crossfadeDurationMs > 0 && dur > 0 && (dur - pos) <= (crossfadeDurationMs * 2).coerceAtLeast(4000)) {
+                        nearCrossfadeWindow = true
+                    }
+
+                    // Throttle low-frequency milestone checks and telemetry to ~1 second interval,
+                    // but execute immediately when near the crossfade/transition window!
                     val now = System.currentTimeMillis()
-                    if (now - lastTelemetryUpdateMs >= 1000L) {
+                    if (nearCrossfadeWindow || now - lastTelemetryUpdateMs >= 1000L) {
                         lastTelemetryUpdateMs = now
                         telemetryManager.updateProgress(pos, dur)
                         if (::lastFmScrobbleManager.isInitialized) {
@@ -2468,8 +3166,8 @@ class AudioPlaybackService : MediaSessionService() {
                         checkPlaybackMilestones(pos, dur)
                     }
                 }
-                // Adaptive tick rate: 250ms when FullPlayer slider is visible and playing, 1000ms when collapsed or paused
-                val tickDelayMs = if (isPlaying && isMounted) 250L else 1000L
+                // Adaptive tick rate: 250ms when FullPlayer slider is visible or approaching crossfade boundary, 1000ms when idle/collapsed
+                val tickDelayMs = if (isPlaying && (isMounted || nearCrossfadeWindow)) 250L else 1000L
                 handler.postDelayed(this, tickDelayMs)
             }
         }
@@ -2541,6 +3239,8 @@ class AudioPlaybackService : MediaSessionService() {
 
             override fun setShuffleModeEnabled(shuffleModeEnabled: Boolean) {
                 wrappedPlayer.shuffleModeEnabled = shuffleModeEnabled
+                serviceShuffleEnabled = shuffleModeEnabled
+                nextPredictedShuffleIndex = -1
                 viewModel?.let { vm ->
                     if (vm.isShuffleEnabled.value != shuffleModeEnabled) {
                         vm.setShuffleEnabled(shuffleModeEnabled)
@@ -2740,30 +3440,304 @@ class AudioPlaybackService : MediaSessionService() {
 
 
 
-    private fun startCrossfadeOut() {
-        if (!shouldExecuteCrossfade(crossfadeDurationMs, isBitPerfectProvider) {
+    private fun getAutoMixAnalyzer(): AutoMixAnalyzer {
+        return autoMixAnalyzer ?: AutoMixAnalyzer(
+            context = this,
+            resolveStreamUrl = { mediaId ->
+                try {
+                    when (val result = streamRepository.getStreamUrl(videoId = mediaId)) {
+                        is com.codetrio.spatialflow.domain.error.Result.Success -> result.data
+                        is com.codetrio.spatialflow.domain.error.Result.Error -> {
+                            YouTubeMusic.getStreamUrl(videoId = mediaId).getOrNull()
+                        }
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        ).also {
+            it.performanceMode = autoMixPerformanceMode
+            autoMixAnalyzer = it
+        }
+    }
+
+    private fun scheduleAutoMix(pos: Long, dur: Long) {
+        if (!autoMixEnabled || isBitPerfectNow() || isCrossfading) {
+            automixTriggerJob?.cancel()
+            automixTriggerJob = null
+            scheduledAutoMixPlan = null
+            AutoMixUiState.transitionWindow.value = null
+            AutoMixUiState.analysis.value = AutoMixUiState.analysis.value.copy(
+                current = AutoMixAnalysisState.WAITING,
+                next = AutoMixAnalysisState.WAITING,
+            )
+            return
+        }
+        val current = currentSong
+        val vm = viewModel
+        val nextIdx = vm?.getNextSongIndex() ?: -1
+        val songs = vm?.songList?.value.orEmpty()
+        val nextSong = songs.getOrNull(nextIdx)
+        val fullDur = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: dur
+
+        if (current == null || nextSong == null || current.id == nextSong.id || fullDur <= 0L) {
+            automixTriggerJob?.cancel()
+            automixTriggerJob = null
+            scheduledAutoMixPlan = null
+            AutoMixUiState.transitionWindow.value = null
+            AutoMixUiState.analysis.value = AutoMixUiState.analysis.value.copy(
+                current = AutoMixAnalysisState.WAITING,
+                next = AutoMixAnalysisState.WAITING,
+            )
+            return
+        }
+
+        val currentTrackInfo = AutoMixTrackInfo(
+            id = current.videoId?.ifBlank { null } ?: current.id.toString(),
+            durationMs = fullDur,
+            title = current.title,
+            artist = current.artist,
+            album = current.albumName ?: ""
+        )
+        val nextTrackInfo = AutoMixTrackInfo(
+            id = nextSong.videoId?.ifBlank { null } ?: nextSong.id.toString(),
+            durationMs = nextSong.duration,
+            title = nextSong.title,
+            artist = nextSong.artist,
+            album = nextSong.albumName ?: ""
+        )
+
+        val analyzer = getAutoMixAnalyzer()
+        val currentUri = currentSourceUri ?: current.path?.let { Uri.parse(it) } ?: current.contentUri
+        val nextUri = queuePreloader.getResolvedUri(nextSong.id)
+            ?: SongDownloader.getDownloadedSongUri(this, nextSong)
+            ?: nextSong.path?.let { Uri.parse(it) }
+            ?: nextSong.contentUri
+
+        // Proactively request background analysis for both tracks
+        analyzer.request(currentTrackInfo.id, currentUri, fullDur)
+        analyzer.request(nextTrackInfo.id, nextUri, nextSong.duration)
+
+        // If high-precision transition monitor job is already active for this track, let it run
+        if (automixTriggerJob?.isActive == true) return
+
+        automixTriggerJob = serviceScope.launch(Dispatchers.Main) {
+            var hasPreparedStandby = false
+            var lastVerdict: String? = null
+            while (isActive) {
+                if (!autoMixEnabled || isCrossfading || isBitPerfectNow()) return@launch
+                val currentPlaying = currentSong ?: return@launch
+                if (currentPlaying.id != current.id) return@launch
+                if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
+                    return@launch
+                }
+                if (!player.isPlaying && !player.playWhenReady) {
+                    delay(500)
+                    continue
+                }
+
+                val currentPos = player.currentPosition
+                val currentDuration = player.duration.takeIf { it != C.TIME_UNSET && it > 0L } ?: fullDur
+
+                val currentUriLoop = currentSourceUri ?: current.path?.let { Uri.parse(it) } ?: current.contentUri
+                val nextUriLoop = queuePreloader.getResolvedUri(nextSong.id)
+                    ?: SongDownloader.getDownloadedSongUri(this@AudioPlaybackService, nextSong)
+                    ?: nextSong.path?.let { Uri.parse(it) }
+                    ?: nextSong.contentUri
+
+                analyzer.request(currentTrackInfo.id, currentUriLoop, currentDuration)
+                analyzer.request(nextTrackInfo.id, nextUriLoop, nextSong.duration)
+
+                val currentAnalysis = analyzer.analysisFor(currentTrackInfo.id)
+                val nextAnalysis = analyzer.analysisFor(nextTrackInfo.id)
+                val isSameAlbum = currentTrackInfo.album.isNotBlank() && currentTrackInfo.album.equals(nextTrackInfo.album, ignoreCase = true)
+
+                val plan = AutoMixPlanner.plan(
+                    current = currentAnalysis,
+                    next = nextAnalysis,
+                    currentTrack = currentTrackInfo.copy(durationMs = currentDuration),
+                    nextTrack = nextTrackInfo,
+                    positionMs = currentPos,
+                    fallbackFadeMs = (crossfadeDurationMs.takeIf { it > 0 } ?: 6000).toLong(),
+                    minFadeMs = 2500L,
+                    gaplessAlbum = isSameAlbum
+                )
+
+                scheduledAutoMixPlan = plan
+
+                publishAutoMixAnalysisState(analyzer, currentTrackInfo.id, nextTrackInfo.id)
+
+                val verdict = "${plan.reason}|${plan.style}|fade=${plan.fadeMs}"
+                if (verdict != lastVerdict) {
+                    lastVerdict = verdict
+                    Log.d(
+                        TAG,
+                        "automix plan ${currentTrackInfo.id}->${nextTrackInfo.id}: $verdict bpm=${currentAnalysis?.bpm ?: 0.0}/${nextAnalysis?.bpm ?: 0.0} conf=${currentAnalysis?.beatConfidence ?: 0.0}/${nextAnalysis?.beatConfidence ?: 0.0}"
+                    )
+                }
+
+                val markable = !plan.blocked &&
+                    plan.markerVisible &&
+                    analyzer.isAnalysed(currentTrackInfo.id) &&
+                    analyzer.isAnalysed(nextTrackInfo.id)
+                AutoMixUiState.transitionWindow.value =
+                    if (markable) {
+                        val startFraction = (plan.transitionStartMs.toFloat() / currentDuration).coerceIn(0f, 1f)
+                        val endFraction = (plan.transitionEndMs.toFloat() / currentDuration).coerceIn(0f, 1f)
+                        if (endFraction > startFraction) {
+                            AutoMixTransitionWindow(startFraction, endFraction)
+                        } else {
+                            null
+                        }
+                    } else {
+                        null
+                    }
+
+                if (plan.blocked) {
+                    delay(1000L)
+                    continue
+                }
+
+                val remainingToStart = plan.transitionStartMs - currentPos
+
+                // 1. Proactively warm standby player 30 seconds ahead (CROSSFADE_PREPARE_AHEAD_MS = 30_000L)
+                if (!hasPreparedStandby && remainingToStart <= 30_000L) {
+                    if (plan.style != AutoMixStyle.GAPLESS) {
+                        preloadNextSongIntoQueue()
+                        if (plan.incomingCueMs > 0L && nextPlayer != null) {
+                            nextPlayer?.seekTo(plan.incomingCueMs)
+                        }
+                    }
+                    hasPreparedStandby = true
+                }
+
+                // 2. Trigger crossfade when transition start is reached
+                if (remainingToStart <= 0L && plan.fadeMs >= 1000L) {
+                    val positionMs = player.currentPosition
+                    val remainingFadeMs = (currentDuration - positionMs).coerceAtMost(plan.fadeMs)
+                    if (remainingFadeMs >= 1000L) {
+                        if (plan.style == AutoMixStyle.GAPLESS) {
+                            return@launch
+                        }
+                        val effectivePlan = plan.copy(fadeMs = remainingFadeMs)
+                        if (nextPlayer != null) {
+                            player.pauseAtEndOfMediaItems = true
+                            attemptTriggerAutoMix(effectivePlan)
+                            return@launch
+                        } else {
+                            // nextPlayer is still buffering; warm it and poll at 50ms
+                            preloadNextSongIntoQueue()
+                            if (plan.incomingCueMs > 0L && nextPlayer != null) {
+                                nextPlayer?.seekTo(plan.incomingCueMs)
+                            }
+                        }
+                    } else {
+                        player.pauseAtEndOfMediaItems = false
+                        playerManager.cancelCrossfade()
+                        AutoMixUiState.transitionWindow.value = null
+                        AutoMixUiState.mixing.value = false
+                        AutoMixUiState.analysis.value = AutoMixUiState.analysis.value.copy(
+                            current = AutoMixAnalysisState.WAITING,
+                            next = AutoMixAnalysisState.WAITING,
+                        )
+                        return@launch
+                    }
+                }
+
+                val sleepMs = when {
+                    remainingToStart > 10_000L -> 1000L
+                    remainingToStart > 2_000L -> 250L
+                    else -> 50L
+                }.coerceAtLeast(1L)
+
+                delay(sleepMs.coerceAtMost(1000L))
+            }
+        }
+    }
+
+    private fun publishAutoMixAnalysisState(
+        analyzer: AutoMixAnalyzer,
+        currentId: String,
+        nextId: String,
+    ) {
+        fun stateOf(trackId: String): AutoMixAnalysisState =
+            when {
+                analyzer.isAnalysed(trackId) -> {
+                    val usable = analyzer.analysisFor(trackId)?.isUsable == true
+                    if (usable) AutoMixAnalysisState.ANALYSED else AutoMixAnalysisState.FAILED
+                }
+                analyzer.isAnalysing(trackId) -> AutoMixAnalysisState.ANALYSING
+                else -> AutoMixAnalysisState.WAITING
+            }
+        val next = AutoMixUiState.analysis.value
+        val updated =
+            AutoMixAnalysisStates(
+                current = stateOf(currentId),
+                next = stateOf(nextId),
+            )
+        if (updated != next) AutoMixUiState.analysis.value = updated
+    }
+
+    private fun attemptTriggerAutoMix(plan: AutoMixPlan) {
+        if (isCrossfading || isBitPerfectNow()) return
+        if (nextPlayer != null) {
+            Log.i(TAG, "Triggering AutoMix plan: ${plan.style} fade=${plan.fadeMs}ms cue=${plan.incomingCueMs}ms")
+            scheduledAutoMixPlan = null
+            player.pauseAtEndOfMediaItems = true
+            playerManager.crossfadeDurationMs = plan.fadeMs.toInt()
+            startCrossfadeOut(plan)
+        } else {
+            Log.w(TAG, "AutoMix reached transition point but nextPlayer is null. Warming standby player immediately...")
+            preloadNextSongIntoQueue()
+        }
+    }
+
+    private fun startCrossfadeOut(plan: AutoMixPlan? = null) {
+        val durationMs = plan?.fadeMs?.toInt() ?: crossfadeDurationMs
+        if (!shouldExecuteCrossfade(durationMs, isBitPerfectProvider) {
             Log.d(TAG, "Crossfade is disabled in Bit-Perfect mode; bypassing startCrossfadeOut.")
         }) {
             return
         }
+        playerManager.crossfadeDurationMs = durationMs
         playerManager.startCrossfade(
             viewModel = viewModel,
+            plan = plan,
             onSongTransition = { nextIdx ->
+                val songs = if (servicePlaylist.isNotEmpty()) servicePlaylist else (viewModel?.songList?.value ?: emptyList())
+                val finalIdx = if (nextIdx >= 0) nextIdx else peekNextSongIndex()
+                if (finalIdx in songs.indices) {
+                    serviceCurrentIndex = finalIdx
+                    nextPredictedShuffleIndex = -1
+                    val song = songs[finalIdx]
+                    this@AudioPlaybackService.currentSong = song
+                    currentSongName = song.title
+                    currentArtist = song.artist
+                    song.id.let { servicePlayedShuffledIds.add(it) }
+
+                    originalSourceUri = song.contentUri
+                    currentSourceUri = song.contentUri
+                    consecutivePlaybackFailures = 0
+                    isNextSongPreCached = false
+
+                    if (song.thumbnailUrl != null) {
+                        setSongMetadataByUrl(song.title, song.thumbnailUrl, song.id.toString(), song.artist)
+                    } else {
+                        setSongMetadataForLocalSong(song)
+                    }
+                    if (!song.videoId.isNullOrEmpty()) {
+                        telemetryManager.onSongChanged(song.videoId!!, song.duration)
+                    }
+                    if (::lastFmScrobbleManager.isInitialized) {
+                        lastFmScrobbleManager.onTrackChanged(song)
+                    }
+                    PlaybackStateManager.saveState(applicationContext, song, 0L, songs, finalIdx)
+                    syncLiveTelemetryToDacManager()
+                }
                 viewModel?.let { vm ->
-                    vm.updateSongIndexOnly(nextIdx)
-                    vm.songList.value.getOrNull(nextIdx)?.let { song ->
-                        this@AudioPlaybackService.currentSong = song
-                        currentSongName = song.title
-                        currentArtist = song.artist
-                        if (song.thumbnailUrl != null) {
-                            setSongMetadataByUrl(song.title, song.thumbnailUrl, song.id.toString(), song.artist)
-                        } else {
-                            setSongMetadataById(song.title, song.albumId, song.artist)
-                        }
-                        if (!song.videoId.isNullOrEmpty()) {
-                            telemetryManager.onSongChanged(song.videoId!!, song.duration)
-                        }
-                        PlaybackStateManager.saveState(applicationContext, song, 0L, vm.songList.value, nextIdx)
+                    vm.updateSongIndexOnly(finalIdx)
+                    songs.getOrNull(finalIdx)?.let { song ->
+                        vm.setCurrentSong(song)
                     }
                 }
             },
@@ -2774,12 +3748,20 @@ class AudioPlaybackService : MediaSessionService() {
     }
 
     private fun completeCrossfadeHandoff() {
+        scheduledAutoMixPlan = null
+        automixTriggerJob?.cancel()
+        automixTriggerJob = null
+        player.pauseAtEndOfMediaItems = false
+        AutoMixUiState.mixing.value = false
+        AutoMixUiState.transitionWindow.value = null
+
         // Unregister listener from the old player to prevent stop() from triggering a pause callback
         player.removeListener(mainPlayerListener)
 
         playerManager.completeCrossfadeHandoff(viewModel) { promotedPlayer ->
             // Apply listeners to the new primary player
             promotedPlayer.addListener(mainPlayerListener)
+            promotedPlayer.pauseAtEndOfMediaItems = false
             
             // Promote focus attributes of the new player
             val attrs = AudioAttributes.Builder()
@@ -2795,16 +3777,19 @@ class AudioPlaybackService : MediaSessionService() {
 
             // Preload the next song into the newly initialized nextPlayer
             handler.postDelayed({ preloadNextSongIntoQueue() }, 300)
+            if (autoMixEnabled && !isBitPerfectNow()) {
+                val dur = promotedPlayer.duration
+                if (dur > 0L) {
+                    scheduleAutoMix(promotedPlayer.currentPosition, dur)
+                }
+            }
         }
     }
 
     private fun handlePlaybackCompleted() {
-        if (isCrossfading && crossfadeNextSongStarted) return
-        viewModel?.let { vm ->
-            vm.setCurrentPosition(0)
-            
-            handler.post { vm.playNextSong() }
-        }
+        if (isCrossfading || crossfadeNextSongStarted) return
+        viewModel?.setCurrentPosition(0)
+        handler.post { playNext() }
     }
 
     private fun cleanCache() {
@@ -2841,14 +3826,46 @@ class AudioPlaybackService : MediaSessionService() {
             configuredDurationSec = customDuration,
             isBitPerfect = isBitPerfect
         )
+
+        autoMixEnabled = prefs.getBoolean(KEY_AUTOMIX_ENABLED, false) && !isBitPerfect
+        if (autoMixEnabled) {
+            crossfadeDurationMs = 0
+        }
+        val perfModeStr = prefs.getString(KEY_AUTOMIX_PERFORMANCE_MODE, AutoMixPerformanceMode.BALANCED.name)
+        autoMixPerformanceMode = try {
+            AutoMixPerformanceMode.valueOf(perfModeStr ?: AutoMixPerformanceMode.BALANCED.name)
+        } catch (_: Exception) {
+            AutoMixPerformanceMode.BALANCED
+        }
+        autoMixAnalyzer?.performanceMode = autoMixPerformanceMode
+        AutoMixUiState.enabled.value = autoMixEnabled
+        if (!autoMixEnabled) {
+            automixTriggerJob?.cancel()
+            automixTriggerJob = null
+            scheduledAutoMixPlan = null
+            AutoMixUiState.mixing.value = false
+            AutoMixUiState.transitionWindow.value = null
+            AutoMixUiState.analysis.value = AutoMixUiState.analysis.value.copy(
+                current = AutoMixAnalysisState.WAITING,
+                next = AutoMixAnalysisState.WAITING,
+            )
+        } else {
+            if (::playerManager.isInitialized) {
+                val dur = player.duration
+                if (dur > 0L && (player.isPlaying || player.playWhenReady)) {
+                    scheduleAutoMix(player.currentPosition, dur)
+                }
+            }
+        }
+
         audioFocusEnabled = prefs.getBoolean(KEY_AUDIO_FOCUS, true)
         autoplayEnabled = prefs.getBoolean("autoplay_enabled", true)
         hapticPauseInBackground = prefs.getBoolean("haptic_pause_background", true)
         disconnectAction = prefs.getString(KEY_DISCONNECT_ACTION, "pause") ?: "pause"
         resumeOnConnect = prefs.getBoolean(KEY_RESUME_ON_CONNECT, false)
-        Log.d(TAG, "loadAudioPreferences: audioFocusEnabled=$audioFocusEnabled, crossfadeDurationMs=$crossfadeDurationMs, autoplayEnabled=$autoplayEnabled, disconnectAction=$disconnectAction, resumeOnConnect=$resumeOnConnect, isBitPerfect=$isBitPerfect")
+        Log.d(TAG, "loadAudioPreferences: audioFocusEnabled=$audioFocusEnabled, crossfadeDurationMs=$crossfadeDurationMs, autoMixEnabled=$autoMixEnabled, autoplayEnabled=$autoplayEnabled, disconnectAction=$disconnectAction, resumeOnConnect=$resumeOnConnect, isBitPerfect=$isBitPerfect")
 
-        if (crossfadeDurationMs == 0) {
+        if (crossfadeDurationMs == 0 && !autoMixEnabled) {
             playerManager.cancelCrossfade()
         }
         
@@ -2876,7 +3893,7 @@ class AudioPlaybackService : MediaSessionService() {
                     if (fmt.isNotEmpty()) viewModel?.updatePlaybackFormat(fmt)
                 }
             }
-            if (KEY_CROSSFADE_DURATION == key || KEY_CROSSFADE_ENABLED == key || "crossfade_mode" == key || KEY_AUDIO_FOCUS == key || "autoplay_enabled" == key || KEY_DISCONNECT_ACTION == key || KEY_RESUME_ON_CONNECT == key) {
+            if (KEY_CROSSFADE_DURATION == key || KEY_CROSSFADE_ENABLED == key || "crossfade_mode" == key || KEY_AUDIO_FOCUS == key || "autoplay_enabled" == key || KEY_DISCONNECT_ACTION == key || KEY_RESUME_ON_CONNECT == key || KEY_AUTOMIX_ENABLED == key || KEY_AUTOMIX_PERFORMANCE_MODE == key) {
                 loadAudioPreferences()
             }
             if ("haptic_pause_background" == key) {
@@ -2913,12 +3930,16 @@ class AudioPlaybackService : MediaSessionService() {
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(Intent.ACTION_HEADSET_PLUG)
+            addAction(ACTION_DUMP_BIT_PERFECT_DIAGNOSTICS)
         }
         audioDeviceReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 val action = intent?.action ?: return
                 Log.d(TAG, "AudioDeviceReceiver action: $action")
                 when (action) {
+                    ACTION_DUMP_BIT_PERFECT_DIAGNOSTICS -> {
+                        logBitPerfectDiagnostics()
+                    }
                     AudioManager.ACTION_AUDIO_BECOMING_NOISY,
                     BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
                         handleAudioDisconnected()

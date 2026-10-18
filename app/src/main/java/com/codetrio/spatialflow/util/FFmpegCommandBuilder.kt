@@ -31,7 +31,7 @@ object FFmpegCommandBuilder {
             append("-y ")
             append("-hide_banner ")
             append("-loglevel error ")
-            append("-threads 0 ")
+            append("-threads 1 ")
 
             append("-i \"$inputPath\" ")
             append("-vn ")
@@ -84,7 +84,8 @@ object FFmpegCommandBuilder {
         title: String = "",
         artist: String = "",
         album: String = "",
-        pictureBase64: String = ""
+        pictureBase64: String = "",
+        lyrics: String = ""
     ): List<String> = buildList {
         add("-y")
         add("-hide_banner")
@@ -104,10 +105,109 @@ object FFmpegCommandBuilder {
         if (title.isNotBlank())  { add("-metadata"); add("title=$title")  }
         if (artist.isNotBlank()) { add("-metadata"); add("artist=$artist") }
         if (album.isNotBlank())  { add("-metadata"); add("album=$album")  }
+        if (lyrics.isNotBlank()) {
+            add("-metadata"); add("lyrics=$lyrics")
+            add("-metadata"); add("LYRICS=$lyrics")
+            add("-metadata"); add("UNSYNCEDLYRICS=$lyrics")
+            add("-metadata"); add("comment=$lyrics")
+        }
 
         // Cover art as METADATA_BLOCK_PICTURE (Opus / FLAC standard Vorbis Comment)
         if (pictureBase64.isNotBlank()) {
             add("-metadata"); add("METADATA_BLOCK_PICTURE=$pictureBase64")
+        }
+
+        add(outputPath)
+    }
+
+    /**
+     * Builds FFmpeg arguments to package a downloaded audio stream into a standard .flac container.
+     * Preserves raw lossless audio quality while embedding Vorbis Comments and METADATA_BLOCK_PICTURE.
+     */
+    @JvmStatic
+    fun buildFlacPackageArgs(
+        inputPath: String,
+        outputPath: String,
+        title: String = "",
+        artist: String = "",
+        album: String = "",
+        pictureBase64: String = "",
+        lyrics: String = ""
+    ): List<String> = buildList {
+        add("-y")
+        add("-hide_banner")
+        add("-loglevel"); add("error")
+
+        add("-i"); add(inputPath)
+        add("-map"); add("0:a")
+
+        // Direct FLAC stream copy if source is flac, or flac encoding
+        add("-c:a"); add("flac")
+
+        // Vorbis Comments (text tags)
+        if (title.isNotBlank())  { add("-metadata"); add("title=$title")  }
+        if (artist.isNotBlank()) { add("-metadata"); add("artist=$artist") }
+        if (album.isNotBlank())  { add("-metadata"); add("album=$album")  }
+        if (lyrics.isNotBlank()) {
+            add("-metadata"); add("lyrics=$lyrics")
+            add("-metadata"); add("LYRICS=$lyrics")
+            add("-metadata"); add("UNSYNCEDLYRICS=$lyrics")
+            add("-metadata"); add("comment=$lyrics")
+        }
+
+        // Cover art as METADATA_BLOCK_PICTURE (FLAC standard)
+        if (pictureBase64.isNotBlank()) {
+            add("-metadata"); add("METADATA_BLOCK_PICTURE=$pictureBase64")
+        }
+
+        add("-f"); add("flac")
+        add(outputPath)
+    }
+
+    @JvmStatic
+    fun buildMp3PackageArgs(
+        inputPath: String,
+        outputPath: String,
+        bitrate: String = "256k",
+        title: String = "",
+        artist: String = "",
+        album: String = "",
+        coverArtPath: String? = null,
+        lyrics: String = ""
+    ): List<String> = buildList {
+        add("-y")
+        add("-hide_banner")
+        add("-loglevel"); add("error")
+
+        add("-i"); add(inputPath)
+        if (!coverArtPath.isNullOrBlank()) {
+            add("-i"); add(coverArtPath)
+        }
+
+        add("-map"); add("0:a")
+        if (!coverArtPath.isNullOrBlank()) {
+            add("-map"); add("1:0")
+        }
+
+        add("-c:a"); add("libmp3lame")
+        add("-b:a"); add(bitrate)
+
+        if (!coverArtPath.isNullOrBlank()) {
+            add("-c:v"); add("copy")
+            add("-disposition:v"); add("attached_pic")
+            add("-metadata:s:v"); add("title=Album cover")
+            add("-metadata:s:v"); add("comment=Cover (front)")
+        }
+
+        if (title.isNotBlank())  { add("-metadata"); add("title=$title")  }
+        if (artist.isNotBlank()) { add("-metadata"); add("artist=$artist") }
+        if (album.isNotBlank())  { add("-metadata"); add("album=$album")  }
+        if (lyrics.isNotBlank()) {
+            add("-metadata"); add("lyrics=$lyrics")
+            add("-metadata"); add("lyrics-eng=$lyrics")
+            add("-metadata"); add("USLT=$lyrics")
+            add("-metadata"); add("SYLT=$lyrics")
+            add("-metadata"); add("comment=$lyrics")
         }
 
         add(outputPath)

@@ -4,6 +4,9 @@ import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+import com.codetrio.spatialflow.domain.error.DataError
+import com.codetrio.spatialflow.domain.error.Result
+
 private const val TAG = "CanvasArtworkResolver"
 
 /**
@@ -23,41 +26,51 @@ internal suspend fun resolveCanvasArtworkForPlayback(
     storefront: String = "us",
     requireVertical: Boolean = false,
     allowNetwork: Boolean = true,
-): CanvasArtwork? {
+): Result<CanvasArtwork, DataError> {
     // 1. Cache hit
-    withContext(Dispatchers.IO) {
+    val cached = withContext(Dispatchers.IO) {
         CanvasArtworkPlaybackCache.get(
             mediaId = mediaId,
             preferCachedOnly = !allowNetwork,
         )
     }?.takeIf { it.hasRequiredCanvasVariant(requireVertical) }
-        ?.let { return it }
+
+    if (cached != null) {
+        return Result.Success(cached)
+    }
 
     if (!allowNetwork || mediaId.isBlank()) {
         Log.d(TAG, "Skipping canvas network lookup for mediaId=$mediaId")
-        return null
+        return Result.Error(DataError.Local.NOT_FOUND)
     }
 
     return withContext(Dispatchers.IO) {
-        val fetched = fetchCanvasArtworkForPlayback(
-            songTitleRaw = songTitleRaw,
-            artistNameRaw = artistNameRaw,
-            storefront = storefront,
-            requireVertical = requireVertical,
-        ) ?: fetchCanvasArtworkByAlbumFallback(
-            albumId = albumId,
-            albumTitleRaw = albumTitleRaw,
-            artistNameRaw = artistNameRaw,
-            storefront = storefront,
-            requireVertical = requireVertical,
-        )
+        try {
+            val fetched = fetchCanvasArtworkForPlayback(
+                songTitleRaw = songTitleRaw,
+                artistNameRaw = artistNameRaw,
+                storefront = storefront,
+                requireVertical = requireVertical,
+                mediaId = mediaId,
+            ) ?: fetchCanvasArtworkByAlbumFallback(
+                albumId = albumId,
+                albumTitleRaw = albumTitleRaw,
+                artistNameRaw = artistNameRaw,
+                storefront = storefront,
+                requireVertical = requireVertical,
+            )
 
-        if (fetched == null) {
-            Log.d(TAG, "No playable canvas resolved for mediaId=$mediaId")
-            return@withContext null
+            if (fetched == null) {
+                Log.d(TAG, "No playable canvas resolved for mediaId=$mediaId")
+                Result.Error(DataError.Network.NOT_FOUND)
+            } else {
+                CanvasArtworkPlaybackCache.put(mediaId, fetched)
+                Result.Success(fetched)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Canvas network error for mediaId=$mediaId: ${e.message}")
+            Result.Error(DataError.Network.UNKNOWN)
         }
-
-        CanvasArtworkPlaybackCache.put(mediaId, fetched)
     }
 }
 
@@ -66,6 +79,7 @@ internal suspend fun fetchCanvasArtworkForPlayback(
     artistNameRaw: String,
     storefront: String,
     requireVertical: Boolean,
+    mediaId: String? = null,
 ): CanvasArtwork? {
     val songTitle = normalizeCanvasSongTitle(songTitleRaw)
     val artistName = normalizeCanvasArtistName(artistNameRaw)
@@ -78,9 +92,24 @@ internal suspend fun fetchCanvasArtworkForPlayback(
     ).filter { (song, artist) -> song.isNotBlank() && artist.isNotBlank() }
 
     return candidates.firstNotNullOfOrNull { (song, artist) ->
-        SongCanvasProvider
-            .getBySongArtist(song = song, artist = artist, storefront = storefront)
+        val artwork = SongCanvasProvider
+            .getBySongArtist(song = song, artist = artist, storefront = storefront, videoId = mediaId)
             ?.takeIf { it.hasRequiredCanvasVariant(requireVertical) }
+
+        if (artwork != null && !artwork.name.isNullOrBlank() && !artwork.artist.isNullOrBlank()) {
+            val normArtworkTitle = com.codetrio.spatialflow.data.sourcepool.TrackMatching.normalizeTitle(artwork.name)
+            val normSongTitle = com.codetrio.spatialflow.data.sourcepool.TrackMatching.normalizeTitle(songTitle)
+            val normArtworkArtist = com.codetrio.spatialflow.data.sourcepool.TrackMatching.normalize(artwork.artist)
+            val normArtistName = com.codetrio.spatialflow.data.sourcepool.TrackMatching.normalize(artistName)
+
+            val titleMatches = normArtworkTitle.contains(normSongTitle) || normSongTitle.contains(normArtworkTitle)
+            val artistMatches = normArtworkArtist.contains(normArtistName) || normArtistName.contains(normArtworkArtist)
+            if (!titleMatches || !artistMatches) {
+                Log.w(TAG, "Rejected mismatched canvas artwork '${artwork.name}' by '${artwork.artist}' for target '$songTitleRaw' by '$artistNameRaw'")
+                return@firstNotNullOfOrNull null
+            }
+        }
+        artwork
     }
 }
 
@@ -102,14 +131,15 @@ private suspend fun fetchCanvasArtworkByAlbumFallback(
     val artistName = artistNameRaw.trim()
     if (albumTitle.isBlank() || artistName.isBlank()) return null
 
-    return SongCanvasProvider
-        .getBySongArtist(song = albumTitle, artist = artistName, storefront = storefront)
+    // Fallback directly to Apple Music ALBUM motion artwork, NEVER query a song named after the album
+    return AppleMusicCanvasProvider
+        .getByAlbumArtist(album = albumTitle, artist = artistName, storefront = storefront)
         ?.takeIf { it.hasRequiredCanvasVariant(requireVertical) }
 }
 
 internal fun CanvasArtwork.hasRequiredCanvasVariant(requireVertical: Boolean): Boolean =
     if (requireVertical) !preferredVerticalAnimationUrl.isNullOrBlank()
-    else !preferredAnimationUrl.isNullOrBlank()
+    else (!preferredAnimationUrl.isNullOrBlank() || !preferredVerticalAnimationUrl.isNullOrBlank())
 
 // ───────────── Query normalization ─────────────
 

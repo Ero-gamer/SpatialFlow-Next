@@ -121,12 +121,16 @@ class ConfidenceScorer {
     }
 
     private fun scoreProviderTrust(providerName: String?): Float {
-        if (providerName?.startsWith("BetterLyrics") == true) {
+        if (providerName?.startsWith("BetterLyrics") == true ||
+            providerName?.contains("Portato", ignoreCase = true) == true ||
+            providerName?.contains("Musixmatch", ignoreCase = true) == true ||
+            providerName?.contains("Unison", ignoreCase = true) == true ||
+            providerName?.contains("BiniLyrics", ignoreCase = true) == true) {
             return 0.98f
         }
         return when (providerName) {
+            "SyncLRC" -> 1.0f // Primary Provider
             "LRCLIB" -> 0.95f
-            "SyncLRC" -> 0.95f
             "EmbeddedID3" -> 0.90f
             "LocalLrc" -> 0.90f
             "YouTube Music" -> 0.85f
@@ -138,7 +142,10 @@ class ConfidenceScorer {
 
     private fun countSyncedLines(lyrics: String): Int {
         if (lyrics.isEmpty()) return 0
-        return lyrics.lines().count { it.matches("^\\[\\d{2}:\\d{2}\\.\\d{2,3}].*".toRegex()) }
+        return lyrics.lines().count {
+            it.matches("^\\[\\d{2}:\\d{2}\\.\\d{2,3}].*".toRegex()) ||
+            it.matches("^\\[\\d+,\\d+].*".toRegex())
+        }
     }
 
     enum class Action {

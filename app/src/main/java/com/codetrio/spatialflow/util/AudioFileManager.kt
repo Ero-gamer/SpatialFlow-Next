@@ -57,11 +57,13 @@ object AudioFileManager {
     }
 
     @JvmStatic
-    fun createOutputFile(context: Context, fileName: String): File {
+    @JvmOverloads
+    fun createOutputFile(context: Context, fileName: String, subFolder: String = "SpatialFlow/Songs"): File {
         var finalFileName = fileName
         if (!finalFileName.endsWith(".m4a", ignoreCase = true) &&
             !finalFileName.endsWith(".mp3", ignoreCase = true) &&
-            !finalFileName.endsWith(".opus", ignoreCase = true)
+            !finalFileName.endsWith(".opus", ignoreCase = true) &&
+            !finalFileName.endsWith(".flac", ignoreCase = true)
         ) {
             finalFileName += ".m4a"
         }
@@ -77,10 +79,10 @@ object AudioFileManager {
             Log.d(TAG, "Temp output file for processing: ${tempFile.absolutePath}")
             tempFile
         } else {
-            // Android 9 and below - Direct file access to Downloads/SpatialFlow
+            // Android 9 and below - Direct file access to Downloads/subFolder
             val downloadsDir = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "SpatialFlow"
+                subFolder
             )
             if (!downloadsDir.exists()) downloadsDir.mkdirs()
 
@@ -91,10 +93,11 @@ object AudioFileManager {
     }
 
     @JvmStatic
-    fun scanFile(context: Context, file: File) {
+    @JvmOverloads
+    fun scanFile(context: Context, file: File, subFolder: String = "SpatialFlow/Songs") {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // Copy to MediaStore Audio for Android 10+
-            copyToMediaStore(context, file)
+            copyToMediaStore(context, file, subFolder)
         } else {
             // Trigger media scanner for older versions
             try {
@@ -111,9 +114,31 @@ object AudioFileManager {
         }
     }
 
-    private fun copyToMediaStore(context: Context, sourceFile: File) {
+    @JvmStatic
+    fun scanDeletedFile(context: Context, file: File) {
+        try {
+            android.media.MediaScannerConnection.scanFile(
+                context,
+                arrayOf(file.absolutePath),
+                null,
+                null
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "scanDeletedFile failed: ${e.message}")
+        }
+    }
+
+    private fun copyToMediaStore(context: Context, sourceFile: File, subFolder: String = "SpatialFlow/Songs") {
         if (!sourceFile.exists()) {
             Log.e(TAG, "Source file doesn't exist: ${sourceFile.absolutePath}")
+            return
+        }
+
+        if (sourceFile.name.endsWith(".lrc", ignoreCase = true) ||
+            sourceFile.name.endsWith(".ttml", ignoreCase = true) ||
+            sourceFile.name.endsWith(".txt", ignoreCase = true)
+        ) {
+            Log.d(TAG, "Skipping MediaStore audio insertion for non-audio file: ${sourceFile.name}")
             return
         }
 
@@ -124,6 +149,8 @@ object AudioFileManager {
         } else if (nameWithoutExtension.endsWith(".m4a", ignoreCase = true)) {
             nameWithoutExtension = nameWithoutExtension.substring(0, nameWithoutExtension.length - 4)
         } else if (nameWithoutExtension.endsWith(".opus", ignoreCase = true)) {
+            nameWithoutExtension = nameWithoutExtension.substring(0, nameWithoutExtension.length - 5)
+        } else if (nameWithoutExtension.endsWith(".flac", ignoreCase = true)) {
             nameWithoutExtension = nameWithoutExtension.substring(0, nameWithoutExtension.length - 5)
         }
 
@@ -136,27 +163,38 @@ object AudioFileManager {
             artist = parts[1].trim { it <= ' ' }
         }
 
-        val values = ContentValues().apply {
-            put(MediaStore.Audio.Media.DISPLAY_NAME, sourceFile.name)
-            put(MediaStore.Audio.Media.TITLE, title)
-            put(MediaStore.Audio.Media.ARTIST, artist)
+        val mimeType = when {
+            sourceFile.name.endsWith(".flac", ignoreCase = true) -> "audio/flac"
+            sourceFile.name.endsWith(".mp3", ignoreCase = true) -> "audio/mpeg"
+            sourceFile.name.endsWith(".opus", ignoreCase = true) -> "audio/opus"
+            else -> "audio/mp4"
+        }
 
-            val mimeType = when {
-                sourceFile.name.endsWith(".mp3", ignoreCase = true) -> "audio/mpeg"
-                sourceFile.name.endsWith(".opus", ignoreCase = true) -> "audio/opus"
-                else -> "audio/mp4"
-            }
-            put(MediaStore.Audio.Media.MIME_TYPE, mimeType)
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, sourceFile.name)
+            put(MediaStore.MediaColumns.TITLE, title)
+            put(MediaStore.MediaColumns.ARTIST, artist)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/SpatialFlow")
-                put(MediaStore.Audio.Media.IS_PENDING, 1)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/$subFolder")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
         }
 
         val resolver = context.contentResolver
-        val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-        val itemUri = resolver.insert(collection, values)
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        } else {
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        }
+
+        val itemUri = try {
+            resolver.insert(collection, values)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to insert into MediaStore: ${e.message}", e)
+            null
+        }
 
         if (itemUri == null) {
             Log.e(TAG, "Failed to create MediaStore entry")
@@ -181,11 +219,24 @@ object AudioFileManager {
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 values.clear()
-                values.put(MediaStore.Audio.Media.IS_PENDING, 0)
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 resolver.update(itemUri, values, null, null)
             }
 
-            Log.d(TAG, "File copied to MediaStore successfully: Music/SpatialFlow/${sourceFile.name}")
+            val targetFile = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "$subFolder/${sourceFile.name}"
+            )
+            if (targetFile.exists()) {
+                android.media.MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(targetFile.absolutePath),
+                    arrayOf(mimeType),
+                    null
+                )
+            }
+
+            Log.d(TAG, "File copied to MediaStore successfully: Downloads/$subFolder/${sourceFile.name}")
 
         } catch (e: IOException) {
             Log.e(TAG, "Error copying to MediaStore: ${e.message}", e)

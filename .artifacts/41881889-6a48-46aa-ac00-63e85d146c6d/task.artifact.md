@@ -1,5 +1,0 @@
-- [ ] Update Gradle Wrapper to 9.7.1
-- [ ] Update AGP settings plugin in `settings.gradle`
-- [ ] Update versions in `libs.versions.toml`
-- [ ] Update `ben-manes.versions` plugin in `app/build.gradle`
-- [ ] Sync Gradle and verify build

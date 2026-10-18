@@ -1,25 +1,96 @@
-*.iml
+# Gradle and Build Cache
+.gradle/
 .gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
+build/
 /build
-/captures
-.externalNativeBuild
+*/build
+**/build/
+.cxx/
 .cxx
+.externalNativeBuild/
+.externalNativeBuild
+/captures
+**/captures/
+
+# Kotlin Compiler Daemon
+.kotlin/
+.kotlin
+
+# Local Configuration & Secrets
 local.properties
+/local.properties
+secrets.properties
+key.properties
+keystore.properties
+signing.properties
+*.env
+.env
+.env.*
+
+# Google Services & Cloud Credentials
+google-services.json
+service-account*.json
+
+# Android Packages, Binaries & Packaging Artifacts
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.flat
+*.idsig
+*.dm
+output-metadata.json
+**/release/
+**/baselineProfiles/
+
+# Keystores, Keys & Certificates
 *.jks
 *.keystore
+*.p12
+*.pfx
+*.key
+*.pk8
+*.pem
+*.der
+*.crt
 spatialflow.jks.b64
-/app/release/
+
+# IDE & Editor Files
+*.iml
+.idea/
+*.ipr
+*.iws
+cmake-build-*/
+.vscode/
+
+# System & Memory Files
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.hprof
+
+# Build, Log & Temp Files
 build_log.txt
 build_errors*.txt
-.agent/
-.idea/
+crash-*.txt
+*.log
+*.tmp
+*.bak
+*.swp
+*~
 
+# AI Assistant & Internal Workspace Metadata
+.agent/
+.gemini/
+.artifacts/
+DESIGN_SKILL.md
+
+# Developer & Gateway Tools
+tools/
 

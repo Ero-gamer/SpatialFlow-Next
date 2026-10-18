@@ -15,5 +15,6 @@ data class PlaylistSongEntity(
     val thumbnailUrl: String? = null,
     val addedAt: Long = System.currentTimeMillis(),
     val position: Int = 0,
-    val lufs: Float? = null
+    val lufs: Float? = null,
+    val isExplicit: Boolean = false
 )

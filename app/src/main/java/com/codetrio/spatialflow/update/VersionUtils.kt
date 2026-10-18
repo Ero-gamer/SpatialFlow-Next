@@ -9,9 +9,9 @@ object VersionUtils {
     @JvmStatic
     fun isNewer(remoteVersion: String, localVersion: String): Boolean {
         try {
-            // Remove 'v' prefix if present
-            val remote = if (remoteVersion.startsWith("v")) remoteVersion.substring(1) else remoteVersion
-            val local = if (localVersion.startsWith("v")) localVersion.substring(1) else localVersion
+            // Remove 'v' or 'V' prefix, trim whitespace, and strip prerelease suffix (e.g. -beta, -rc)
+            val remote = remoteVersion.trim().removePrefix("v").removePrefix("V").substringBefore("-").trim()
+            val local = localVersion.trim().removePrefix("v").removePrefix("V").substringBefore("-").trim()
 
             val remoteParts = remote.split(".")
             val localParts = local.split(".")

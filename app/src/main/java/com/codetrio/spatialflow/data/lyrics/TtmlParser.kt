@@ -21,11 +21,17 @@ object TtmlParser {
     fun parse(ttmlContent: String?): List<LyricLine> {
         if (ttmlContent.isNullOrBlank()) return emptyList()
 
+        val sanitized = sanitizeXml(ttmlContent)
+
         return try {
             val dbf = DocumentBuilderFactory.newInstance()
             dbf.isNamespaceAware = true
+            // Disable DTD entity expansion for security and stability
+            try {
+                dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            } catch (_: Exception) {}
             val db = dbf.newDocumentBuilder()
-            val doc = db.parse(ByteArrayInputStream(ttmlContent.toByteArray(Charsets.UTF_8)))
+            val doc = db.parse(ByteArrayInputStream(sanitized.toByteArray(Charsets.UTF_8)))
             doc.documentElement.normalize()
 
             val pNodes = doc.getElementsByTagName("p")
@@ -51,10 +57,13 @@ object TtmlParser {
                     it == "x-bg" || it == "background"
                 } ?: false
 
+                val agentAttr = getAttributeAny(pElement, "agent", "ttm:agent")?.trim()
+
                 val childNodes = pElement.childNodes
+                val hasSpanChildren = pElement.getElementsByTagName("span").length > 0
                 var hasPendingSpace = false
 
-                if (childNodes.length > 0) {
+                if (hasSpanChildren && childNodes.length > 0) {
                     fun processSpanElement(span: Element, parentIsBg: Boolean) {
                         val roleAttr = getAttributeAny(span, "role", "ttm:role")?.lowercase()
                         val isSpanBg = parentIsBg || roleAttr == "x-bg" || roleAttr == "background"
@@ -114,7 +123,17 @@ object TtmlParser {
                             val elem = node as Element
                             val localName = elem.localName ?: elem.tagName
                             if (localName.endsWith("span", ignoreCase = true)) {
-                                processSpanElement(elem, isBg)
+                                val roleAttr = getAttributeAny(elem, "role", "ttm:role")?.lowercase()
+                                val isSpanBg = isBg || roleAttr == "x-bg" || roleAttr == "background"
+                                val childSpans = elem.getElementsByTagName("span")
+                                if (childSpans.length > 0) {
+                                    val children = elem.childNodes
+                                    for (c in 0 until children.length) {
+                                        traverseNode(children.item(c), isSpanBg)
+                                    }
+                                } else {
+                                    processSpanElement(elem, isSpanBg)
+                                }
                             } else {
                                 val children = elem.childNodes
                                 for (c in 0 until children.length) {
@@ -136,11 +155,22 @@ object TtmlParser {
                     val prevLine = lines.lastOrNull()
                     val isRecent = prevLine != null && (lineStartMs - prevLine.startTimeMs) < 4000L
 
+                    val isRightAligned = agentAttr?.lowercase()?.let {
+                        it == "v2" || it.contains("v2") || it.contains("singer2") || it.contains("artist2") || it.contains("secondary")
+                    } ?: (contentText.startsWith("[Singer 2", ignoreCase = true) ||
+                          contentText.startsWith("[Artist 2", ignoreCase = true) ||
+                          contentText.startsWith("(Singer 2", ignoreCase = true) ||
+                          contentText.startsWith("(Artist 2", ignoreCase = true) ||
+                          contentText.startsWith("[Duet 2", ignoreCase = true))
+
                     if (isLineBg && prevLine != null && isRecent && prevLine.backgroundContent == null) {
                         // Merge background vocals into overlapping preceding line
+                        val bgWords = if (words.isNotEmpty()) words else {
+                            listOf(LyricWord(text = contentText, absoluteStartTimeMs = lineStartMs, durationMs = 2500L, isBackground = true))
+                        }
                         lines[lines.lastIndex] = prevLine.copy(
                             backgroundContent = contentText,
-                            backgroundWords = words
+                            backgroundWords = bgWords
                         )
                     } else {
                         lines.add(
@@ -150,7 +180,9 @@ object TtmlParser {
                                 isInterlude = false,
                                 isWordByWord = words.isNotEmpty(),
                                 words = words,
-                                isBackground = isLineBg
+                                isBackground = isLineBg,
+                                agent = agentAttr,
+                                isRightAligned = isRightAligned
                             )
                         )
                     }
@@ -159,7 +191,165 @@ object TtmlParser {
 
             lines.sorted()
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing TTML lyrics: ${e.message}")
+            Log.w(TAG, "DOM parsing failed (${e.message}), attempting resilient regex fallback parser")
+            parseWithRegexFallback(sanitized)
+        }
+    }
+
+    /**
+     * Sanitizes raw XML content before passing to DocumentBuilder.
+     * Fixes unescaped ampersands, unclosed <br> tags, and illegal XML control characters.
+     */
+    private fun sanitizeXml(raw: String): String {
+        var s = raw.trim()
+        // Strip BOM if present
+        if (s.startsWith("\uFEFF")) {
+            s = s.substring(1)
+        }
+        // Fix unescaped ampersands (e.g. "R&B" -> "R&amp;B")
+        s = s.replace(Regex("&(?!(amp|lt|gt|quot|apos|#\\d+|#x[0-9a-fA-F]+);)"), "&amp;")
+        // Fix self-closing br/hr tags
+        s = s.replace(Regex("<br(?=[^>]*)(?<!/)>", RegexOption.IGNORE_CASE), "<br/>")
+        s = s.replace(Regex("<hr(?=[^>]*)(?<!/)>", RegexOption.IGNORE_CASE), "<hr/>")
+        // Remove illegal XML control characters (ASCII 0-8, 11-12, 14-31)
+        s = s.replace(Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F]"), "")
+        return s
+    }
+
+    /**
+     * Resilient regex-based TTML parser that extracts <p> and <span> tags
+     * even when the document has invalid XML syntax or is partially truncated.
+     */
+    private fun parseWithRegexFallback(xml: String): List<LyricLine> {
+        return try {
+            val lines = mutableListOf<LyricLine>()
+            val pPattern = Regex("""<p\b([^>]*)>(.*?)</p>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+            val spanPattern = Regex("""<span\b([^>]*)>(.*?)</span>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+            val attrPattern = Regex("""([a-zA-Z0-9_:\-]+)\s*=\s*["']([^"']*)["']""")
+
+            fun parseAttributes(attrStr: String): Map<String, String> {
+                val map = mutableMapOf<String, String>()
+                attrPattern.findAll(attrStr).forEach { match ->
+                    val k = match.groupValues[1].lowercase()
+                    val v = match.groupValues[2]
+                    map[k] = v
+                    val suffix = k.substringAfterLast(":")
+                    if (suffix != k) map[suffix] = v
+                }
+                return map
+            }
+
+            pPattern.findAll(xml).forEach { pMatch ->
+                val pAttrs = parseAttributes(pMatch.groupValues[1])
+                val pInner = pMatch.groupValues[2]
+
+                val beginAttr = pAttrs["begin"] ?: "00:00.00"
+                val endAttr = pAttrs["end"]
+                val durAttr = pAttrs["dur"]
+
+                val lineStartMs = parseRawTime(beginAttr)
+                val lineEndMs = when {
+                    endAttr != null -> parseRawTime(endAttr)
+                    durAttr != null -> lineStartMs + parseRawTime(durAttr)
+                    else -> lineStartMs + 5000L
+                }
+
+                val roleAttr = pAttrs["role"]?.lowercase()
+                val isLineBg = roleAttr == "x-bg" || roleAttr == "background"
+                val agentAttr = pAttrs["agent"]?.trim()
+
+                val words = mutableListOf<LyricWord>()
+                val lineSb = StringBuilder()
+
+                val spanMatches = spanPattern.findAll(pInner).toList()
+                if (spanMatches.isNotEmpty()) {
+                    for (spanMatch in spanMatches) {
+                        val spanAttrs = parseAttributes(spanMatch.groupValues[1])
+                        val spanRawText = spanMatch.groupValues[2].replace(Regex("<[^>]+>"), "")
+                        val cleanText = spanRawText.trim()
+                        if (cleanText.isEmpty()) continue
+
+                        val spanRole = spanAttrs["role"]?.lowercase()
+                        val isSpanBg = isLineBg || spanRole == "x-bg" || spanRole == "background"
+
+                        val wordBegin = spanAttrs["begin"]
+                        val wordEnd = spanAttrs["end"]
+                        val wordDur = spanAttrs["dur"]
+
+                        if (lineSb.isNotEmpty() && !lineSb.endsWith(" ")) {
+                            lineSb.append(" ")
+                        }
+
+                        val startChar = lineSb.length
+                        lineSb.append(cleanText)
+                        val endChar = (lineSb.length - 1).coerceAtLeast(startChar)
+
+                        val rawWordStart = if (wordBegin != null) parseRawTime(wordBegin) else lineStartMs
+                        val rawWordEnd = when {
+                            wordEnd != null -> parseRawTime(wordEnd)
+                            wordDur != null -> rawWordStart + parseRawTime(wordDur)
+                            else -> rawWordStart + 300L
+                        }
+
+                        val wordStartMs = normalizeChildTime(rawWordStart, lineStartMs, lineEndMs, lineStartMs)
+                        val wordEndMs = normalizeChildTime(rawWordEnd, lineStartMs, lineEndMs, lineEndMs).coerceAtLeast(wordStartMs)
+                        val duration = (wordEndMs - wordStartMs).coerceAtLeast(50L)
+
+                        words.add(
+                            LyricWord(
+                                text = cleanText,
+                                absoluteStartTimeMs = wordStartMs,
+                                durationMs = duration,
+                                charRange = startChar..endChar,
+                                isBackground = isSpanBg
+                            )
+                        )
+                    }
+                } else {
+                    lineSb.append(pInner.replace(Regex("<[^>]+>"), "").trim())
+                }
+
+                val contentText = lineSb.toString().trim()
+                if (contentText.isNotEmpty()) {
+                    val prevLine = lines.lastOrNull()
+                    val isRecent = prevLine != null && (lineStartMs - prevLine.startTimeMs) < 4000L
+
+                    val isRightAligned = agentAttr?.lowercase()?.let {
+                        it == "v2" || it.contains("v2") || it.contains("singer2") || it.contains("artist2") || it.contains("secondary")
+                    } ?: (contentText.startsWith("[Singer 2", ignoreCase = true) ||
+                          contentText.startsWith("[Artist 2", ignoreCase = true) ||
+                          contentText.startsWith("(Singer 2", ignoreCase = true) ||
+                          contentText.startsWith("(Artist 2", ignoreCase = true) ||
+                          contentText.startsWith("[Duet 2", ignoreCase = true))
+
+                    if (isLineBg && prevLine != null && isRecent && prevLine.backgroundContent == null) {
+                        val bgWords = if (words.isNotEmpty()) words else {
+                            listOf(LyricWord(text = contentText, absoluteStartTimeMs = lineStartMs, durationMs = 2500L, isBackground = true))
+                        }
+                        lines[lines.lastIndex] = prevLine.copy(
+                            backgroundContent = contentText,
+                            backgroundWords = bgWords
+                        )
+                    } else {
+                        lines.add(
+                            LyricLine(
+                                startTimeMs = lineStartMs,
+                                content = contentText,
+                                isInterlude = false,
+                                isWordByWord = words.isNotEmpty(),
+                                words = words,
+                                isBackground = isLineBg,
+                                agent = agentAttr,
+                                isRightAligned = isRightAligned
+                            )
+                        )
+                    }
+                }
+            }
+
+            lines.sorted()
+        } catch (e: Exception) {
+            Log.e(TAG, "Regex fallback TTML parsing also failed: ${e.message}")
             emptyList()
         }
     }

@@ -30,6 +30,7 @@ object LrcUtils {
         parserOptions: LrcParserOptions,
         format: LyricFormat?
     ): SemanticLyrics? {
+        var lastException: Exception? = null
         for (i in listOf({
             if (format == null || format == LyricFormat.TTML)
                 parseTtml(audioMimeType, lyrics)
@@ -43,30 +44,31 @@ object LrcUtils {
                 parseLrc(lyrics, parserOptions.trim, parserOptions.multiLine)
             else null
         })) {
-            return try {
+            try {
                 val ret = i() ?: continue
-                if (ret is SyncedLyrics && Flags.HIDE_SAME_TRANSLATIONS)
-                    ret.copy(text = ret.text.filterIndexed { i, it ->
-                        !it.isTranslated || it.text != ret.text.subList(0, i)
+                return if (ret is SyncedLyrics && Flags.HIDE_SAME_TRANSLATIONS)
+                    ret.copy(text = ret.text.filterIndexed { idx, it ->
+                        !it.isTranslated || it.text != ret.text.subList(0, idx)
                             .last { !it.isTranslated }.text
                     })
                 else
                     ret
             } catch (e: Exception) {
-                if (parserOptions.errorText == null)
-                    throw e
-                Log.e(TAG, Log.getThrowableString(e)!!)
-                Log.e(TAG, "The lyrics are:\n$lyrics")
-                SemanticLyrics.UnsyncedLyrics(
-                    listOf(
-                        parserOptions.errorText + "\n\n${
-                            Log.getThrowableString(
-                                e
-                            )!!
-                        }\n\n$lyrics" to null
-                    )
-                )
+                lastException = e
             }
+        }
+        if (parserOptions.errorText != null && lastException != null) {
+            Log.e(TAG, Log.getThrowableString(lastException) ?: "Failed to parse lyrics")
+            Log.e(TAG, "The lyrics are:\n$lyrics")
+            return SemanticLyrics.UnsyncedLyrics(
+                listOf(
+                    parserOptions.errorText + "\n\n${
+                        Log.getThrowableString(
+                            lastException
+                        ) ?: ""
+                    }\n\n$lyrics" to null
+                )
+            )
         }
         return null
     }
@@ -125,9 +127,39 @@ object LrcUtils {
         parserOptions: LrcParserOptions
     ): SemanticLyrics? {
         return loadTextFile(
-            musicFile?.let { File(it.parentFile, it.nameWithoutExtension + ".ttml") },
+            musicFile?.let { File(it.parentFile, it.nameWithoutExtension + ".qrc") },
             parserOptions.errorText
-        )?.let { parseLyrics(it, audioMimeType, parserOptions, LyricFormat.TTML) }
+        )?.let { qrcText ->
+            if (com.codetrio.spatialflow.data.lyrics.QrcParser.isQrc(qrcText)) {
+                val lines = com.codetrio.spatialflow.data.lyrics.QrcParser.parse(qrcText)
+                if (lines.isNotEmpty()) return@loadAndParseLyricsFile SemanticLyrics.SyncedLyrics(
+                    lines.map { line ->
+                        val lineEnd = (line.words.maxOfOrNull { it.absoluteStartTimeMs + it.durationMs } ?: (line.startTimeMs + 3000L)).toULong()
+                        SemanticLyrics.LyricLine(
+                            text = line.content,
+                            start = line.startTimeMs.toULong(),
+                            end = lineEnd,
+                            endIsImplicit = line.words.isEmpty(),
+                            words = line.words.map { w ->
+                                SemanticLyrics.Word(
+                                    begin = w.absoluteStartTimeMs.toULong(),
+                                    endInclusive = (w.absoluteStartTimeMs + w.durationMs).toULong(),
+                                    charRange = w.charRange,
+                                    isRtl = false
+                                )
+                            }.toMutableList().takeIf { it.isNotEmpty() },
+                            speaker = null,
+                            isTranslated = false
+                        )
+                    }
+                )
+            }
+            null
+        }
+            ?: loadTextFile(
+                musicFile?.let { File(it.parentFile, it.nameWithoutExtension + ".ttml") },
+                parserOptions.errorText
+            )?.let { parseLyrics(it, audioMimeType, parserOptions, LyricFormat.TTML) }
             ?: loadTextFile(
                 musicFile?.let { File(it.parentFile, it.nameWithoutExtension + ".srt") },
                 parserOptions.errorText

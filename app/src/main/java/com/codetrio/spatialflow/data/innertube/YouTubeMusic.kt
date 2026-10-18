@@ -13,6 +13,9 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.google.gson.JsonArray
+import com.google.gson.JsonElement
+import com.google.gson.JsonObject
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -28,9 +31,50 @@ object YouTubeMusic {
     // Intelligent Streaming Performance Caches
     private val streamUrlCache = ConcurrentHashMap<String, Pair<String, Long>>()
     private val activeStreamRequests = ConcurrentHashMap<String, Deferred<Result<String>>>()
+    private val resolvedFormatTags = ConcurrentHashMap<String, String>()
+    private val resolvedProviders = ConcurrentHashMap<String, String>()
     private const val CACHE_TTL = 6 * 60 * 60 * 1000L // Standard 6 Hour TTL
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun clearCache() {
+        streamUrlCache.clear()
+        resolvedFormatTags.clear()
+        resolvedProviders.clear()
+    }
+
+    fun clearVideoCache(videoId: String) {
+        streamUrlCache.remove(videoId)
+        streamUrlCache.entries.removeIf { it.key.startsWith("$videoId:") }
+        resolvedFormatTags.remove(videoId)
+        resolvedProviders.remove(videoId)
+    }
+
+    fun getResolvedFormatTag(videoId: String): String? = resolvedFormatTags[videoId]
+
+    fun setResolvedFormatTag(videoId: String, tag: String) {
+        resolvedFormatTags[videoId] = tag
+    }
+
+    fun getResolvedProvider(videoId: String): String? = resolvedProviders[videoId]
+
+    fun setResolvedProvider(videoId: String, provider: String) {
+        resolvedProviders[videoId] = provider
+    }
+
+    private fun sanitizeStreamUrl(rawUrl: String): String {
+        if (!rawUrl.contains("range=") && !rawUrl.contains("rn=")) return rawUrl
+        // Use non-destructive regex replacement to remove range/rn query parameters.
+        // Never use android.net.Uri.parse().buildUpon().clearQuery() because it decodes
+        // and re-encodes query params, corrupting cryptographic signatures (sig, lsig, sparams).
+        return rawUrl
+            .replace(Regex("&range=[^&]*"), "")
+            .replace(Regex("\\?range=[^&]*&"), "?")
+            .replace(Regex("\\?range=[^&]*$"), "")
+            .replace(Regex("&rn=[^&]*"), "")
+            .replace(Regex("\\?rn=[^&]*&"), "?")
+            .replace(Regex("\\?rn=[^&]*$"), "")
+    }
 
     private fun cleanExpiredCache() {
         val now = System.currentTimeMillis()
@@ -65,7 +109,9 @@ object YouTubeMusic {
         runCatching {
             kotlinx.coroutines.withTimeout(7000L.milliseconds) {
                 val response = InnerTubeClient.search(query, filter?.value)
-                InnerTubeParser.parseSearchResponse(response)
+                withContext(Dispatchers.Default) {
+                    InnerTubeParser.parseSearchResponse(response)
+                }
             }
         }
     }
@@ -77,7 +123,9 @@ object YouTubeMusic {
         runCatching {
             kotlinx.coroutines.withTimeout(7000L.milliseconds) {
                 val response = InnerTubeClient.search("", continuation = continuation)
-                InnerTubeParser.parseSearchResponse(response)
+                withContext(Dispatchers.Default) {
+                    InnerTubeParser.parseSearchResponse(response)
+                }
             }
         }
     }
@@ -173,73 +221,171 @@ object YouTubeMusic {
      * Atomically acquires the best audio stream URL for a given video ID.
      * Implements absolute deduped parallelism prevention and automatic caching.
      */
-    suspend fun getStreamUrl(videoId: String?): Result<String> = coroutineScope {
+    suspend fun getStreamUrl(
+        videoId: String?,
+        forceHighQuality: Boolean = false,
+        title: String? = null,
+        artist: String? = null,
+        isrc: String? = null,
+        overridePreferOpus: Boolean? = null,
+        isRetry: Boolean = false,
+        durationMs: Long? = null
+    ): Result<String> = coroutineScope {
         if (videoId.isNullOrEmpty()) return@coroutineScope Result.failure(IllegalArgumentException("Video ID null"))
 
         cleanExpiredCache()
         
-        // Check Level 1 Cache: Instant memory map retrieval
-        val cached = streamUrlCache[videoId]
-        if (cached != null && cached.second > System.currentTimeMillis()) {
-            return@coroutineScope Result.success(cached.first)
+        val (audioQuality, dataSaver, forceOpus) = NewPipeStreamExtractor.getPreferencesSnapshot()
+        val isDataSaver = dataSaver || audioQuality.equals("Data Saver", ignoreCase = true) || audioQuality.equals("Low", ignoreCase = true)
+        val preferOpus = overridePreferOpus ?: (!isDataSaver && (forceHighQuality || forceOpus || true))
+        val cacheKey = "$videoId:$audioQuality:${if (preferOpus) "opus" else "aac"}${if (isRetry) ":retry" else ""}"
+
+        // Check Level 1 Cache: Instant memory map retrieval (bypassed on retry)
+        if (!forceHighQuality && !isRetry) {
+            val cached = streamUrlCache[cacheKey] ?: (if (overridePreferOpus == null) streamUrlCache[videoId] else null)
+            if (cached != null && cached.second > System.currentTimeMillis()) {
+                val tag = resolvedFormatTags[videoId] ?: "Cached"
+                com.codetrio.spatialflow.util.ConsoleLogger.stream("Stream Cache HIT for $videoId -> $tag")
+                return@coroutineScope Result.success(cached.first)
+            }
         }
 
         // Level 2: Check for in-flight request duplication prevention
         // Atomically compute or retrieve an active coroutine future for this exact stream.
-        val activeTask = activeStreamRequests.computeIfAbsent(videoId) { id ->
+        val activeTask = activeStreamRequests.computeIfAbsent(cacheKey) { _ ->
             appScope.async {
                 try {
-                    // Attempt the lightning-fast InnerTube JSON API first
                     var bestUrl: String? = null
-                    try {
-                        val playerJson = InnerTubeClient.player(id)
-                        val parsed = InnerTubeParser.parsePlayerResponse(playerJson)
-                        val (audioQuality, _) = NewPipeStreamExtractor.getPreferencesSnapshot()
+                    var formatTag: String? = null
 
-                        val audioStreams = parsed?.streams
-                            ?.filter { it.mimeType.contains("audio", ignoreCase = true) }
-                        
-                        val streamsList = audioStreams.orEmpty()
-                        val opusStreams = streamsList.filter { it.mimeType.contains("opus", ignoreCase = true) }
-                        val streamsToSelectFrom = if (opusStreams.isNotEmpty()) opusStreams else streamsList
-
-                        val bestStream = when (audioQuality) {
-                            "Data Saver" -> streamsToSelectFrom.minByOrNull { it.bitrate }
-                            "Normal" -> {
-                                val sorted = streamsToSelectFrom.sortedBy { it.bitrate }
-                                sorted.elementAtOrNull(sorted.size / 2)
+                    // Resolve song title & artist if missing
+                    var resolvedTitle = title?.takeIf { it.isNotBlank() }
+                    var resolvedArtist = artist?.takeIf { it.isNotBlank() }
+                    var resolvedDurationSeconds: Long? = durationMs?.takeIf { it > 0 }?.let { it / 1000L }
+                    if (resolvedTitle == null || resolvedDurationSeconds == null) {
+                        try {
+                            val streamInfo = NewPipeStreamExtractor.fetchStreamInfo(videoId)
+                            if (streamInfo != null) {
+                                if (resolvedTitle == null) resolvedTitle = streamInfo.name
+                                if (resolvedArtist == null) resolvedArtist = streamInfo.uploaderName
+                                if (resolvedDurationSeconds == null && streamInfo.duration > 0) {
+                                    resolvedDurationSeconds = streamInfo.duration
+                                }
                             }
-                            else -> streamsToSelectFrom.maxByOrNull { it.bitrate }
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "Failed to resolve streamInfo for metadata: ${e.message}")
                         }
-                        bestUrl = bestStream?.url
-                        if (!bestUrl.isNullOrEmpty()) {
-                            Log.d(TAG, "Successfully resolved primary stream via InnerTube player API for $id")
-                        }
-                    } catch (primaryEx: Exception) {
-                        Log.e(TAG, "InnerTube player API failed for $id: ${primaryEx.message}")
                     }
 
-                    // Fallback to NewPipe if InnerTube fails (e.g., due to missing ciphers or HTTP 400)
+                    com.codetrio.spatialflow.util.ConsoleLogger.stream("Resolving stream for $videoId (title=\"${resolvedTitle ?: "unknown"}\", artist=\"${resolvedArtist ?: "unknown"}\", duration=${resolvedDurationSeconds ?: 0}s, isRetry=$isRetry)...")
+
+                    // 1. Attempt Lossless / Hi-Fi stream resolution via MLS, Qobuz, or JioSaavn (bypassed on retry)
+                    val ctx = NewPipeStreamExtractor.getAppContext()
+                    val losslessEnabled = !isRetry && !isDataSaver && (ctx == null || com.codetrio.spatialflow.util.QualityModeSelector.isLosslessStreamingEnabled(ctx))
+
+                    if (losslessEnabled && (!resolvedTitle.isNullOrBlank() || videoId.isNotBlank())) {
+                        try {
+                            val preferHiRes = audioQuality.equals("High", ignoreCase = true) ||
+                                audioQuality.equals("Highest", ignoreCase = true) ||
+                                audioQuality.equals("Hi-Res", ignoreCase = true) ||
+                                (ctx != null && com.codetrio.spatialflow.util.QualityModeSelector.getPlaybackMode(ctx) == com.codetrio.spatialflow.util.PlaybackMode.BIT_PERFECT) ||
+                                (com.codetrio.spatialflow.service.dac.UsbDacManager.isDacConnected.value)
+                            val pipeline = if (ctx != null) com.codetrio.spatialflow.util.QualityModeSelector.getActiveLosslessPriorityPipeline(ctx) else com.codetrio.spatialflow.data.sourcepool.LosslessProvider.DEFAULT_PRIORITY_ORDER
+                            val losslessResult = com.codetrio.spatialflow.data.sourcepool.LosslessStreamResolver.resolveStream(
+                                videoId = videoId,
+                                title = resolvedTitle,
+                                artist = resolvedArtist,
+                                durationSeconds = resolvedDurationSeconds,
+                                preferHiRes = preferHiRes,
+                                pipeline = pipeline,
+                                context = ctx
+                            )
+                            if (losslessResult != null && losslessResult.url.isNotBlank()) {
+                                bestUrl = losslessResult.url
+                                formatTag = losslessResult.formatTag
+                                val cleanProvider = when {
+                                    losslessResult.providerName.contains("Tidal Direct") -> "Tidal Direct (Authenticated Account • Hi-Fi FLAC)"
+                                    losslessResult.providerName.contains("Tidal Community Pool") -> "Source Pool (Tidal Account • Lossless FLAC)"
+                                    losslessResult.providerName.contains("Tidal (Lossy AAC)") -> "Tidal (320 kbps AAC • Direct CDN)"
+                                    losslessResult.providerName.contains("Qobuz Hi-Res") -> "Source Pool (Qobuz Hi-Res FLAC • Akamai CDN)"
+                                    losslessResult.providerName.contains("Qobuz") -> "Source Pool (Qobuz Studio FLAC • Akamai CDN)"
+                                    losslessResult.providerName.contains("Deezer") -> "Deezer Hi-Fi (Lossless FLAC • Direct CDN)"
+                                    losslessResult.providerName.contains("MLS") -> "MLS Lossless (HuggingFace FLAC • High Fidelity)"
+                                    losslessResult.providerName.contains("JioSaavn") -> "JioSaavn Hi-Fi (320 kbps AAC • Direct CDN)"
+                                    else -> losslessResult.providerName
+                                }
+                                resolvedProviders[videoId] = cleanProvider
+                                com.codetrio.spatialflow.util.ConsoleLogger.stream("✨ $cleanProvider active for $videoId: \"${resolvedTitle ?: videoId}\" [$formatTag]")
+                                Log.d(TAG, "Stream resolved via $cleanProvider for $videoId ($resolvedTitle - $resolvedArtist) [$formatTag]")
+                            }
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "Lossless stream attempt bypassed: ${e.message}")
+                        }
+                    }
+
+                    // 2. Fallback to NewPipe YouTube stream (Opus / AAC)
                     if (bestUrl.isNullOrEmpty()) {
-                        Log.d(TAG, "InnerTube player returned empty for $id. Falling back to NewPipe HTML scraper...")
-                        bestUrl = NewPipeStreamExtractor.getStreamUrl(id)
-                        if (!bestUrl.isNullOrEmpty()) {
-                            Log.d(TAG, "Successfully resolved fallback stream via NewPipe for $id")
+                        com.codetrio.spatialflow.util.ConsoleLogger.stream("Resolving via YouTube NewPipe for $videoId (preferOpus=$preferOpus, forceHQ=$forceHighQuality)...")
+                        Log.d(TAG, "Resolving stream for $videoId via NewPipe (preferOpus=$preferOpus, forceHQ=$forceHighQuality)...")
+                        try {
+                            val result = NewPipeStreamExtractor.getStreamWithFormat(
+                                videoId,
+                                forceHighQuality = forceHighQuality,
+                                preferOpus = preferOpus
+                            )
+                            if (result != null && !result.first.isNullOrEmpty()) {
+                                bestUrl = result.first
+                                formatTag = result.second
+                                resolvedProviders[videoId] = "YouTube Music (NewPipe Opus/AAC)"
+                                Log.d(TAG, "Stream obtained via NewPipe ($formatTag) for $videoId")
+                                com.codetrio.spatialflow.util.ConsoleLogger.stream("Stream obtained via NewPipe ($formatTag) for $videoId")
+                            }
+                        } catch (e: Throwable) {
+                            Log.e(TAG, "NewPipe stream extraction failed for $videoId: ${e.message}")
+                        }
+                    }
+
+                    // 3. Tier 3: Direct Native InnerTube Multi-Client Fallback (ANDROID_VR / VISIONOS / IOS / WEB_REMIX)
+                    if (bestUrl.isNullOrEmpty()) {
+                        try {
+                            com.codetrio.spatialflow.util.ConsoleLogger.stream("Resolving via Native InnerTube Tier 3 for $videoId...")
+                            Log.d(TAG, "Resolving via Native InnerTube Tier 3 for $videoId...")
+                            val playerJson = InnerTubeClient.player(videoId)
+                            val playerResult = InnerTubeParser.parsePlayerResponse(playerJson, parseStreams = true)
+                            val fallbackStream = playerResult?.streams?.firstOrNull()?.url ?: playerResult?.playbackUrl
+                            if (!fallbackStream.isNullOrEmpty()) {
+                                bestUrl = fallbackStream
+                                formatTag = "Native InnerTube • OPUS/AAC"
+                                resolvedProviders[videoId] = "YouTube Music (Google InnerTube • CDN Edge)"
+                                Log.i(TAG, "Stream obtained via Native InnerTube Tier 3 for $videoId")
+                                com.codetrio.spatialflow.util.ConsoleLogger.stream("Stream obtained via Native InnerTube Tier 3 for $videoId")
+                            }
+                        } catch (e: Throwable) {
+                            Log.e(TAG, "Tier 3 InnerTube fallback failed for $videoId: ${e.message}")
                         }
                     }
 
                     if (!bestUrl.isNullOrEmpty()) {
-                        // Commit successfully resolved URL to memory cache
-                        streamUrlCache[id] = bestUrl to (System.currentTimeMillis() + CACHE_TTL)
-                        Result.success(bestUrl)
+                        val finalUrl = sanitizeStreamUrl(bestUrl)
+                        if (!formatTag.isNullOrEmpty()) {
+                            resolvedFormatTags[videoId] = formatTag
+                        }
+                        if (!forceHighQuality) {
+                            streamUrlCache[cacheKey] = finalUrl to (System.currentTimeMillis() + CACHE_TTL)
+                            if (preferOpus) {
+                                streamUrlCache[videoId] = finalUrl to (System.currentTimeMillis() + CACHE_TTL)
+                            }
+                        }
+                        com.codetrio.spatialflow.util.ConsoleLogger.stream("Playback Ready: $videoId -> $formatTag")
+                        Result.success(finalUrl)
                     } else {
                         Result.failure(IllegalStateException("Stream extraction total exhaustion"))
                     }
-                } catch (e: Exception) {
-                    Result.failure(e)
+                } catch (e: Throwable) {
+                    Result.failure(if (e is Exception) e else RuntimeException(e))
                 } finally {
                     // Release request lock immediately upon resolution boundary
-                    activeStreamRequests.remove(id)
+                    activeStreamRequests.remove(cacheKey)
                 }
             }
         }
@@ -253,7 +399,7 @@ object YouTubeMusic {
      */
     suspend fun getLoudnessDb(videoId: String): Result<Float> = withContext(Dispatchers.IO) {
         runCatching {
-            android.util.Log.d("YouTubeMusic", "Fetching loudnessDb for videoId: $videoId via playerWebRemix")
+            Log.d("YouTubeMusic", "Fetching loudnessDb for videoId: $videoId via playerWebRemix")
             // Using playerWebRemix (Client 67) instead of player (Android/iOS) to bypass HTTP 400 blocks
             val playerJson = InnerTubeClient.playerWebRemix(videoId)
             val playerConfig = playerJson.getAsJsonObject("playerConfig")
@@ -261,14 +407,14 @@ object YouTubeMusic {
             val loudnessDb = audioConfig?.get("loudnessDb")?.asFloat
             
             if (loudnessDb == null) {
-                android.util.Log.w("YouTubeMusic", "Loudness DB not found in playerWebRemix response for $videoId")
+                Log.w("YouTubeMusic", "Loudness DB not found in playerWebRemix response for $videoId")
                 throw Exception("Loudness DB not found in player response")
             } else {
-                android.util.Log.d("YouTubeMusic", "Successfully fetched loudnessDb: $loudnessDb for $videoId")
+                Log.d("YouTubeMusic", "Successfully fetched loudnessDb: $loudnessDb for $videoId")
                 loudnessDb
             }
         }.onFailure { e ->
-            android.util.Log.e("YouTubeMusic", "Failed to fetch loudnessDb for $videoId: ${e.message}", e)
+            Log.e("YouTubeMusic", "Failed to fetch loudnessDb for $videoId: ${e.message}", e)
         }
     }
 
@@ -279,9 +425,11 @@ object YouTubeMusic {
      */
     suspend fun home(): Result<HomePage> = withContext(Dispatchers.IO) {
         runCatching {
-            kotlinx.coroutines.withTimeout(7000L.milliseconds) {
+            kotlinx.coroutines.withTimeout(15000L.milliseconds) {
                 val response = InnerTubeClient.browse(browseId = "FEmusic_home")
-                InnerTubeParser.parseHomePage(response)
+                withContext(Dispatchers.Default) {
+                    InnerTubeParser.parseHomePage(response)
+                }
             }
         }
     }
@@ -291,9 +439,11 @@ object YouTubeMusic {
      */
     suspend fun homeContinuation(continuation: String): Result<HomePage> = withContext(Dispatchers.IO) {
         runCatching {
-            kotlinx.coroutines.withTimeout(7000L.milliseconds) {
+            kotlinx.coroutines.withTimeout(15000L.milliseconds) {
                 val response = InnerTubeClient.browse(continuation = continuation)
-                InnerTubeParser.parseHomePage(response)
+                withContext(Dispatchers.Default) {
+                    InnerTubeParser.parseHomePage(response)
+                }
             }
         }
     }
@@ -303,27 +453,33 @@ object YouTubeMusic {
      */
     suspend fun explore(): Result<HomePage> = withContext(Dispatchers.IO) {
         runCatching {
-            kotlinx.coroutines.withTimeout(7000L.milliseconds) {
+            kotlinx.coroutines.withTimeout(15000L.milliseconds) {
                 val response = InnerTubeClient.browse(browseId = "FEmusic_explore")
-                InnerTubeParser.parseHomePage(response)
+                withContext(Dispatchers.Default) {
+                    InnerTubeParser.parseHomePage(response)
+                }
             }
         }
     }
 
     suspend fun moodsAndGenres(): Result<List<HomeSection>> = withContext(Dispatchers.IO) {
         runCatching {
-            kotlinx.coroutines.withTimeout(7000L.milliseconds) {
+            kotlinx.coroutines.withTimeout(15000L.milliseconds) {
                 val response = InnerTubeClient.browse(browseId = "FEmusic_moods_and_genres")
-                InnerTubeParser.parseMoodsAndGenresPage(response)
+                withContext(Dispatchers.Default) {
+                    InnerTubeParser.parseMoodsAndGenresPage(response)
+                }
             }
         }
     }
 
     suspend fun moodCategory(browseId: String, params: String?): Result<HomePage> = withContext(Dispatchers.IO) {
         runCatching {
-            kotlinx.coroutines.withTimeout(7000L.milliseconds) {
+            kotlinx.coroutines.withTimeout(15000L.milliseconds) {
                 val response = InnerTubeClient.browse(browseId = browseId, params = params)
-                InnerTubeParser.parseHomePage(response)
+                withContext(Dispatchers.Default) {
+                    InnerTubeParser.parseHomePage(response)
+                }
             }
         }
     }
@@ -336,8 +492,10 @@ object YouTubeMusic {
     suspend fun album(browseId: String): Result<AlbumPage> = withContext(Dispatchers.IO) {
         runCatching {
             val response = InnerTubeClient.browse(browseId = browseId)
-            InnerTubeParser.parseAlbumPage(response, browseId)
-                ?: throw Exception("Failed to parse album $browseId")
+            withContext(Dispatchers.Default) {
+                InnerTubeParser.parseAlbumPage(response, browseId)
+                    ?: throw Exception("Failed to parse album $browseId")
+            }
         }
     }
 
@@ -436,11 +594,124 @@ object YouTubeMusic {
     // ========== Playlists ==========
 
     /**
+     * Parses a single OnlineSong from a YouTube Music musicResponsiveListItemRenderer.
+     */
+    fun parseMusicResponsiveListItem(renderer: JsonObject): OnlineSong? {
+        val flexColumns = renderer.getAsJsonArray("flexColumns") ?: return null
+        val songTitle = flexColumns.getOrNull(0)?.asJsonObject
+            ?.path("musicResponsiveListItemFlexColumnRenderer.text.runs.0.text")?.asString ?: return null
+        val videoId = renderer.path("overlay.musicItemThumbnailOverlayRenderer.content.musicPlayButtonRenderer.playNavigationEndpoint.watchEndpoint.videoId")?.asString
+            ?: renderer.path("navigationEndpoint.watchEndpoint.videoId")?.asString
+            ?: renderer.path("playlistItemData.videoId")?.asString
+            ?: flexColumns.getOrNull(0)?.asJsonObject
+                ?.path("musicResponsiveListItemFlexColumnRenderer.text.runs.0.navigationEndpoint.watchEndpoint.videoId")?.asString
+            ?: return null
+        val subtitleRuns = flexColumns.getOrNull(1)?.asJsonObject
+            ?.path("musicResponsiveListItemFlexColumnRenderer.text.runs")?.asJsonArray
+        val artistText = subtitleRuns?.joinToString("") { run ->
+            run.takeIf { it.isJsonObject }?.asJsonObject?.get("text")?.asString ?: ""
+        } ?: ""
+        val fixedColumns = renderer.getAsJsonArray("fixedColumns")
+        val duration = fixedColumns?.getOrNull(0)?.asJsonObject
+            ?.path("musicResponsiveListItemFixedColumnRenderer.text.runs.0.text")?.asString
+        val songThumbnail = InnerTubeParser.getHighResThumbnailUrl(
+            renderer.path("thumbnail.musicThumbnailRenderer.thumbnail.thumbnails")
+                ?.asJsonArray?.lastOrNull()?.asJsonObject?.get("url")?.asString
+        )
+        val artistId = subtitleRuns?.getOrNull(0)?.asJsonObject
+            ?.path("navigationEndpoint.browseEndpoint.browseId")?.asString
+
+        return OnlineSong(
+            videoId = videoId,
+            title = songTitle,
+            artist = artistText.trim(),
+            duration = duration,
+            durationMs = parseDuration(duration),
+            thumbnailUrl = songThumbnail,
+            artistId = artistId
+        )
+    }
+
+    /**
+     * Helper to extract continuation token across all YouTube Music InnerTube formats:
+     * - continuations array on container (nextContinuationData, continuationCommand, reloadContinuationData, etc.)
+     * - continuationEndpoint directly on container
+     * - continuationItemRenderer inside contents/items array
+     * - onResponseReceivedActions (appendContinuationItemsAction / reloadContinuationItemsCommand)
+     * - continuationContents (musicPlaylistShelfContinuation, musicShelfContinuation, sectionListContinuation)
+     */
+    fun extractContinuationToken(
+        container: JsonObject? = null,
+        contents: JsonArray? = null,
+        response: JsonObject? = null
+    ): String? {
+        if (contents != null && contents.size() > 0) {
+            for (i in (contents.size() - 1) downTo 0) {
+                val itemObj = contents.get(i).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                val contItem = itemObj.getAsJsonObject("continuationItemRenderer") ?: continue
+                val token = contItem.path("continuationEndpoint.continuationCommand.token")?.asString
+                    ?: contItem.path("continuationEndpoint.nextContinuationData.continuation")?.asString
+                    ?: contItem.path("continuationEndpoint.browseContinuationEndpoint.continuation")?.asString
+                    ?: contItem.path("continuationEndpoint.reloadContinuationData.continuation")?.asString
+                    ?: contItem.path("continuationEndpoint.nextRadioContinuationData.continuation")?.asString
+                if (!token.isNullOrBlank()) return token
+            }
+        }
+
+        if (container != null) {
+            val continuations = container.get("continuations")?.takeIf { it.isJsonArray }?.asJsonArray
+            if (continuations != null && continuations.size() > 0) {
+                for (i in 0 until continuations.size()) {
+                    val contObj = continuations.get(i).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    val token = contObj.path("nextContinuationData.continuation")?.asString
+                        ?: contObj.path("continuationEndpoint.continuationCommand.token")?.asString
+                        ?: contObj.path("reloadContinuationData.continuation")?.asString
+                        ?: contObj.path("nextRadioContinuationData.continuation")?.asString
+                        ?: contObj.path("continuationEndpoint.browseContinuationEndpoint.continuation")?.asString
+                        ?: contObj.path("continuationEndpoint.nextContinuationData.continuation")?.asString
+                    if (!token.isNullOrBlank()) return token
+                }
+            }
+            val directToken = container.path("continuationEndpoint.continuationCommand.token")?.asString
+                ?: container.path("continuationEndpoint.nextContinuationData.continuation")?.asString
+                ?: container.path("continuationEndpoint.browseContinuationEndpoint.continuation")?.asString
+            if (!directToken.isNullOrBlank()) return directToken
+        }
+
+        if (response != null) {
+            val actions = response.getAsJsonArray("onResponseReceivedActions")
+            if (actions != null && actions.size() > 0) {
+                for (i in 0 until actions.size()) {
+                    val action = actions.get(i).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    val items = action.path("appendContinuationItemsAction.continuationItems")?.asJsonArray
+                        ?: action.path("reloadContinuationItemsCommand.continuationItems")?.asJsonArray
+                    if (items != null) {
+                        val token = extractContinuationToken(contents = items)
+                        if (!token.isNullOrBlank()) return token
+                    }
+                }
+            }
+
+            val contContents = response.getAsJsonObject("continuationContents")
+            if (contContents != null) {
+                for ((_, shelfElement) in contContents.entrySet()) {
+                    val shelf = shelfElement.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    val token = extractContinuationToken(container = shelf, contents = shelf.getAsJsonArray("contents"))
+                    if (!token.isNullOrBlank()) return token
+                }
+            }
+        }
+
+        return null
+    }
+
+    /**
      * Get a playlist's details and songs.
      */
-    suspend fun playlist(playlistId: String): Result<PlaylistPage> = withContext(Dispatchers.IO) {
+    suspend fun playlist(playlistId: String, forceRefresh: Boolean = false): Result<PlaylistPage> = withContext(Dispatchers.IO) {
         runCatching {
-            val response = InnerTubeClient.browse(browseId = "VL$playlistId")
+            val cleanBrowseId = if (playlistId.startsWith("VL")) playlistId else "VL$playlistId"
+            val response = InnerTubeClient.browse(browseId = cleanBrowseId)
 
             val header = response.path(
                 "contents.twoColumnBrowseResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents.0.musicResponsiveHeaderRenderer"
@@ -454,6 +725,9 @@ object YouTubeMusic {
                 ?: response.path(
                     "contents.singleColumnBrowseResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents.0.musicEditablePlaylistDetailHeaderRenderer.header.musicResponsiveHeaderRenderer"
                 )?.asJsonObject
+                ?: response.path("header.musicResponsiveHeaderRenderer")?.asJsonObject
+                ?: response.path("header.musicEditablePlaylistDetailHeaderRenderer.header.musicResponsiveHeaderRenderer")?.asJsonObject
+                ?: response.path("header.musicDetailHeaderRenderer")?.asJsonObject
 
             val title = header?.path("title.runs.0.text")?.asString ?: "Playlist"
             val authorRun = header?.path("straplineTextOne.runs.0")?.asJsonObject
@@ -469,59 +743,61 @@ object YouTubeMusic {
             )
             val songCount = header?.path("secondSubtitle.runs.0.text")?.asString
 
-            // Parse songs
-            var songContents = response.path(
-                "contents.twoColumnBrowseResultsRenderer.secondaryContents.sectionListRenderer.contents.0.musicPlaylistShelfRenderer.contents"
-            )?.asJsonArray
-            if (songContents == null) {
-                songContents = response.path(
-                    "contents.singleColumnBrowseResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents.0.musicPlaylistShelfRenderer.contents"
+            // Parse songs: check primary known paths first
+            var playlistShelf = response.path(
+                "contents.twoColumnBrowseResultsRenderer.secondaryContents.sectionListRenderer.contents.0.musicPlaylistShelfRenderer"
+            )?.asJsonObject
+                ?: response.path(
+                    "contents.singleColumnBrowseResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents.0.musicPlaylistShelfRenderer"
+                )?.asJsonObject
+                ?: response.path(
+                    "contents.singleColumnBrowseResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents.1.musicPlaylistShelfRenderer"
+                )?.asJsonObject
+
+            // Fallback: search sectionListContents for musicPlaylistShelfRenderer
+            if (playlistShelf == null) {
+                val sectionListContents = response.path(
+                    "contents.twoColumnBrowseResultsRenderer.secondaryContents.sectionListRenderer.contents"
                 )?.asJsonArray
+                    ?: response.path(
+                        "contents.singleColumnBrowseResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents"
+                    )?.asJsonArray
+                    ?: response.path(
+                        "contents.twoColumnBrowseResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents"
+                    )?.asJsonArray
+                    ?: response.path("contents.sectionListRenderer.contents")?.asJsonArray
+
+                if (sectionListContents != null) {
+                    for (i in 0 until sectionListContents.size()) {
+                        val obj = sectionListContents.get(i).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                        val shelf = obj.getAsJsonObject("musicPlaylistShelfRenderer")
+                        if (shelf != null) {
+                            playlistShelf = shelf
+                            break
+                        }
+                    }
+                    if (playlistShelf == null) {
+                        for (i in 0 until sectionListContents.size()) {
+                            val obj = sectionListContents.get(i).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                            val shelf = obj.getAsJsonObject("musicShelfRenderer")
+                            if (shelf != null) {
+                                playlistShelf = shelf
+                                break
+                            }
+                        }
+                    }
+                }
             }
 
+            val songContents = playlistShelf?.getAsJsonArray("contents")
             val songs = mutableListOf<OnlineSong>()
             songContents?.forEach { item ->
                 val obj = item.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
                 val renderer = obj.getAsJsonObject("musicResponsiveListItemRenderer") ?: return@forEach
-                val flexColumns = renderer.getAsJsonArray("flexColumns")
-                val songTitle = flexColumns.getOrNull(0)?.asJsonObject
-                    ?.path("musicResponsiveListItemFlexColumnRenderer.text.runs.0.text")?.asString ?: return@forEach
-                val videoId = renderer.path("overlay.musicItemThumbnailOverlayRenderer.content.musicPlayButtonRenderer.playNavigationEndpoint.watchEndpoint.videoId")?.asString
-                    ?: renderer.path("navigationEndpoint.watchEndpoint.videoId")?.asString
-                    ?: flexColumns.getOrNull(0)?.asJsonObject
-                        ?.path("musicResponsiveListItemFlexColumnRenderer.text.runs.0.navigationEndpoint.watchEndpoint.videoId")?.asString
-                    ?: return@forEach
-                val subtitleRuns = flexColumns.getOrNull(1)?.asJsonObject
-                    ?.path("musicResponsiveListItemFlexColumnRenderer.text.runs")?.asJsonArray
-                val artistText = subtitleRuns?.joinToString("") { run ->
-                    run.takeIf { it.isJsonObject }?.asJsonObject?.get("text")?.asString ?: ""
-                } ?: ""
-                val fixedColumns = renderer.getAsJsonArray("fixedColumns")
-                val duration = fixedColumns?.getOrNull(0)?.asJsonObject
-                    ?.path("musicResponsiveListItemFixedColumnRenderer.text.runs.0.text")?.asString
-                val songThumbnail = InnerTubeParser.getHighResThumbnailUrl(
-                    renderer.path("thumbnail.musicThumbnailRenderer.thumbnail.thumbnails")
-                        ?.asJsonArray?.lastOrNull()?.asJsonObject?.get("url")?.asString
-                )
-
-                songs.add(OnlineSong(
-                    videoId = videoId,
-                    title = songTitle,
-                    artist = artistText.trim(),
-                    duration = duration,
-                    durationMs = parseDuration(duration),
-                    thumbnailUrl = songThumbnail
-                ))
+                parseMusicResponsiveListItem(renderer)?.let { songs.add(it) }
             }
 
-            var currentContinuation = response.path(
-                "contents.twoColumnBrowseResultsRenderer.secondaryContents.sectionListRenderer.contents.0.musicPlaylistShelfRenderer.continuations.0.nextContinuationData.continuation"
-            )?.asString
-            if (currentContinuation == null) {
-                currentContinuation = response.path(
-                    "contents.singleColumnBrowseResultsRenderer.tabs.0.tabRenderer.content.sectionListRenderer.contents.0.musicPlaylistShelfRenderer.continuations.0.nextContinuationData.continuation"
-                )?.asString
-            }
+            val currentContinuation = extractContinuationToken(container = playlistShelf, contents = songContents, response = response)
 
             PlaylistPage(
                 playlist = OnlinePlaylist(
@@ -534,6 +810,133 @@ object YouTubeMusic {
                 songs = songs,
                 continuation = currentContinuation
             )
+        }
+    }
+
+    /**
+     * Load more songs from a playlist continuation token.
+     * Handles onResponseReceivedActions (standard),
+     * musicPlaylistShelfContinuation, musicShelfContinuation, and sectionListContinuation.
+     */
+    suspend fun playlistContinuation(continuation: String): Result<Pair<List<OnlineSong>, String?>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = InnerTubeClient.browse(continuation = continuation)
+            val songs = mutableListOf<OnlineSong>()
+            val rawItems = mutableListOf<JsonObject>()
+
+            // 1. Check onResponseReceivedActions (Standard modern YouTube Music format)
+            val actions = response.getAsJsonArray("onResponseReceivedActions")
+            if (actions != null && actions.size() > 0) {
+                for (i in 0 until actions.size()) {
+                    val action = actions.get(i).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    val continuationItems = action.path("appendContinuationItemsAction.continuationItems")?.asJsonArray
+                        ?: action.path("reloadContinuationItemsCommand.continuationItems")?.asJsonArray
+                    if (continuationItems != null) {
+                        for (j in 0 until continuationItems.size()) {
+                            val item = continuationItems.get(j).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                            rawItems.add(item)
+                        }
+                    }
+                }
+            }
+
+            // 2. Check continuationContents (Legacy / alternate format)
+            val continuationContents = response.getAsJsonObject("continuationContents")
+            val continuationShelf = continuationContents?.getAsJsonObject("musicPlaylistShelfContinuation")
+                ?: continuationContents?.getAsJsonObject("musicShelfContinuation")
+
+            val shelfContents = continuationShelf?.getAsJsonArray("contents")
+                ?: continuationShelf?.getAsJsonArray("items")
+
+            if (shelfContents != null) {
+                for (i in 0 until shelfContents.size()) {
+                    val item = shelfContents.get(i).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    rawItems.add(item)
+                }
+            }
+
+            // 3. Check sectionListContinuation
+            val sectionListCont = continuationContents?.getAsJsonObject("sectionListContinuation")
+            val sectionContents = sectionListCont?.getAsJsonArray("contents")
+            if (sectionContents != null) {
+                for (i in 0 until sectionContents.size()) {
+                    val sec = sectionContents.get(i).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                    val shelf = sec.getAsJsonObject("musicPlaylistShelfRenderer")
+                        ?: sec.getAsJsonObject("musicShelfRenderer")
+                    val items = shelf?.getAsJsonArray("contents")
+                    if (items != null) {
+                        for (j in 0 until items.size()) {
+                            val item = items.get(j).takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                            rawItems.add(item)
+                        }
+                    }
+                }
+            }
+
+            var nextContinuation: String? = null
+
+            for (item in rawItems) {
+                val contItem = item.getAsJsonObject("continuationItemRenderer")
+                if (contItem != null) {
+                    val token = contItem.path("continuationEndpoint.continuationCommand.token")?.asString
+                        ?: contItem.path("continuationEndpoint.nextContinuationData.continuation")?.asString
+                        ?: contItem.path("continuationEndpoint.browseContinuationEndpoint.continuation")?.asString
+                        ?: contItem.path("continuationEndpoint.reloadContinuationData.continuation")?.asString
+                    if (!token.isNullOrBlank()) {
+                        nextContinuation = token
+                    }
+                    continue
+                }
+
+                val renderer = item.getAsJsonObject("musicResponsiveListItemRenderer") ?: continue
+                parseMusicResponsiveListItem(renderer)?.let { songs.add(it) }
+            }
+
+            if (nextContinuation.isNullOrBlank()) {
+                nextContinuation = extractContinuationToken(container = continuationShelf, response = response)
+            }
+
+            Pair(songs, nextContinuation)
+        }
+    }
+
+    /**
+     * Extension to fetch all remaining pages of a PlaylistPage.
+     */
+    suspend fun PlaylistPage.completed(): PlaylistPage {
+        var page = this
+        var cont = page.continuation
+        val allSongs = page.songs.toMutableList()
+        var count = 0
+        while (!cont.isNullOrBlank() && count < 250) {
+            count++
+            val res = playlistContinuation(cont).getOrNull() ?: break
+            val (newSongs, nextCont) = res
+            if (newSongs.isEmpty()) break
+            allSongs.addAll(newSongs)
+            if (nextCont == cont) break
+            cont = nextCont
+        }
+        return page.copy(songs = allSongs, continuation = null)
+    }
+
+    /**
+     * Remove a song from a YouTube Music playlist.
+     */
+    suspend fun removeFromPlaylist(playlistId: String, videoId: String, setVideoId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = InnerTubeClient.removeFromPlaylist(playlistId, videoId, setVideoId)
+            response.has("status") || response.has("playlistEditResults") || response.has("responseContext")
+        }
+    }
+
+    /**
+     * Rename a YouTube Music playlist.
+     */
+    suspend fun renamePlaylist(playlistId: String, newName: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            val response = InnerTubeClient.renamePlaylist(playlistId, newName)
+            response.has("status") || response.has("playlistEditResults") || response.has("responseContext")
         }
     }
 
@@ -679,7 +1082,7 @@ object YouTubeMusic {
     /**
      * Get related songs for a given video.
      */
-    private fun findJsonObjectRecursively(element: com.google.gson.JsonElement?, targetKey: String): com.google.gson.JsonObject? {
+    private fun findJsonObjectRecursively(element: JsonElement?, targetKey: String): JsonObject? {
         if (element == null || !element.isJsonObject) return null
         val obj = element.asJsonObject
         if (obj.has(targetKey) && obj.get(targetKey).isJsonObject) {
@@ -700,7 +1103,7 @@ object YouTubeMusic {
         return null
     }
 
-    private fun findJsonArrayRecursively(element: com.google.gson.JsonElement?, targetKey: String): com.google.gson.JsonArray? {
+    private fun findJsonArrayRecursively(element: JsonElement?, targetKey: String): JsonArray? {
         if (element == null || !element.isJsonObject) return null
         val obj = element.asJsonObject
         if (obj.has(targetKey) && obj.get(targetKey).isJsonArray) {
@@ -853,14 +1256,44 @@ object YouTubeMusic {
     }
 
     /**
+     * Resolves YouTube videoId for a non-YouTube or local track title and artist.
+     */
+    suspend fun resolveVideoIdForTrack(title: String, artist: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val query = "$title - $artist"
+            val searchRes = search(query, SearchFilter.SONGS).getOrThrow()
+            val song = searchRes.items.firstNotNullOfOrNull { item ->
+                when (item) {
+                    is SearchItem.Song -> item.song
+                    is SearchItem.TopResult -> item.song
+                    else -> null
+                }
+            }
+            song?.videoId ?: throw NoSuchElementException("No matching YouTube track found for '$query'")
+        }
+    }
+
+    /**
      * Prefetch a stream in background to speed up playback switches
      */
     fun prefetchStream(videoId: String?) {
         if (videoId.isNullOrEmpty()) return
-        com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor.prefetchBatch(
-            listOf(videoId), 
-            com.codetrio.spatialflow.data.innertube.NewPipeStreamExtractor.PrefetchPriority.LOW
-        )
+        prefetchStreams(listOf(videoId))
+    }
+
+    /**
+     * Warms the tap-path stream cache for several videos concurrently.
+     */
+    fun prefetchStreams(videoIds: List<String>) {
+        val targets = videoIds.filter { it.isNotEmpty() }
+        if (targets.isEmpty()) return
+        appScope.launch {
+            targets.forEach { id ->
+                val cached = streamUrlCache[id]
+                if (cached != null && cached.second > System.currentTimeMillis()) return@forEach
+                launch { runCatching { getStreamUrl(id) } }
+            }
+        }
     }
 
     /**

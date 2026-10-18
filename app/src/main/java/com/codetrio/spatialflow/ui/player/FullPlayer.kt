@@ -2,23 +2,35 @@ package com.codetrio.spatialflow.ui.player
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.Intent
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.unit.Velocity
+import kotlinx.coroutines.delay
+import kotlin.math.abs
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,25 +44,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.PlaylistAdd
+import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.painterResource
+import com.codetrio.spatialflow.R
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,29 +70,24 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.palette.graphics.Palette
-import coil.ImageLoader
-import coil.request.ImageRequest
 import com.codetrio.spatialflow.MainActivity
-import com.codetrio.spatialflow.R
 import com.codetrio.spatialflow.data.lyrics.LyricLine
 import com.codetrio.spatialflow.data.lyrics.LyricsResult
 import com.codetrio.spatialflow.model.SongItem
 import com.codetrio.spatialflow.player.queue.SlidingQueueDrawer
+import com.codetrio.spatialflow.ui.player.metrics.LocalScreenMetrics
+import com.codetrio.spatialflow.ui.player.metrics.computeScreenMetrics
+import com.codetrio.spatialflow.ui.theme.observeKey
 import com.codetrio.spatialflow.viewmodel.PlayerSharedViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 /**
  * Stateful wrapper for the FullPlayer UI component.
@@ -97,6 +104,9 @@ fun FullPlayerScreen(
     context: Context,
     onCollapse: () -> Unit,
     dragModifier: Modifier = Modifier,
+    lyricsArtworkAnim: Animatable<Float, androidx.compose.animation.core.AnimationVector1D>,
+    allowCanvas: Boolean = true,
+    allowRealtimeUpdates: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val view = LocalView.current
@@ -108,7 +118,6 @@ fun FullPlayerScreen(
     val lyricsError by viewModel.lyricsError.collectAsStateWithLifecycle()
     val providerResults by viewModel.providerResults.collectAsStateWithLifecycle()
     val selectedProvider by viewModel.selectedProvider.collectAsStateWithLifecycle()
-    val currentPositionState = viewModel.currentPosition.collectAsStateWithLifecycle()
     val isAutoplayEnabled by viewModel.isAutoplayEnabled.collectAsStateWithLifecycle()
 
     // Handle back button when lyrics mode is enabled
@@ -134,23 +143,127 @@ fun FullPlayerScreen(
             com.codetrio.spatialflow.ui.SnackbarController.showMessage("Microphone permission required for haptics")
         }
     }
-    
+
     val localPlaylists by viewModel.localPlaylistsFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    var onlinePlaylists by remember {
+        mutableStateOf<List<com.codetrio.spatialflow.data.innertube.OnlinePlaylist>>(
+            emptyList()
+        )
+    }
+    val isLoggedIn = remember(context) { com.codetrio.spatialflow.data.innertube.AccountManager.isLoggedIn(context) }
     var showAddToPlaylistDialog by remember { mutableStateOf(false) }
+    var showSaveQueueDialog by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var showCreateQueuePlaylistDialog by remember { mutableStateOf(false) }
+    var queueSongsToSave by remember { mutableStateOf<List<SongItem>>(emptyList()) }
+    var createIsOnline by remember { mutableStateOf(false) }
+
+    LaunchedEffect(isLoggedIn, showAddToPlaylistDialog, showSaveQueueDialog) {
+        if (isLoggedIn && (showAddToPlaylistDialog || showSaveQueueDialog)) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.codetrio.spatialflow.data.innertube.YouTubeMusic.libraryPlaylists().onSuccess { playlists ->
+                    onlinePlaylists = playlists
+                }
+            }
+        }
+    }
+
+    if (showSaveQueueDialog) {
+        val songsFromCurrent = remember(songList, uiState.currentSongIndex) {
+            if (uiState.currentSongIndex in songList.indices) songList.subList(
+                uiState.currentSongIndex,
+                songList.size
+            ) else songList
+        }
+
+        com.codetrio.spatialflow.ui.dialogs.AddToPlaylistBottomSheet(
+            songs = songList,
+            songsFromCurrentIndex = songsFromCurrent,
+            localPlaylists = localPlaylists,
+            onlinePlaylists = onlinePlaylists,
+            isLoggedIn = isLoggedIn,
+            onCreateNewLocalWithSongs = { targetSongs ->
+                createIsOnline = false
+                queueSongsToSave = targetSongs
+                showCreateQueuePlaylistDialog = true
+                showSaveQueueDialog = false
+            },
+            onCreateNewOnlineWithSongs = { targetSongs ->
+                createIsOnline = true
+                queueSongsToSave = targetSongs
+                showCreateQueuePlaylistDialog = true
+                showSaveQueueDialog = false
+            },
+            onSelectLocalPlaylistWithSongs = { playlist, targetSongs ->
+                viewModel.addSongsToLocalPlaylist(playlist.id, targetSongs)
+                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Added ${targetSongs.size} tracks to '${playlist.title}'")
+                showSaveQueueDialog = false
+            },
+            onSelectOnlinePlaylistWithSongs = { onlinePlaylist, targetSongs ->
+                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Saving ${targetSongs.size} tracks to YouTube Music...")
+                viewModel.addSongsToYouTubePlaylist(onlinePlaylist.playlistId, targetSongs) { success, msg ->
+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage(msg)
+                }
+                showSaveQueueDialog = false
+            },
+            onDismiss = { showSaveQueueDialog = false }
+        )
+    }
+
+    if (showCreateQueuePlaylistDialog) {
+        com.codetrio.spatialflow.ui.dialogs.CreatePlaylistDialog(
+            isOnline = createIsOnline,
+            onConfirm = { name ->
+                if (!createIsOnline) {
+                    viewModel.createLocalPlaylistWithSongs(name, queueSongsToSave)
+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Saved playlist '$name' with ${queueSongsToSave.size} tracks")
+                } else {
+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Creating YouTube Music playlist...")
+                    viewModel.createYouTubePlaylistWithSongs(name, queueSongsToSave) { success, playlistId ->
+                        if (success) {
+                            com.codetrio.spatialflow.ui.SnackbarController.showMessage("Created YouTube playlist '$name'")
+                        } else {
+                            com.codetrio.spatialflow.ui.SnackbarController.showMessage("Failed to create YouTube playlist")
+                        }
+                    }
+                }
+                showCreateQueuePlaylistDialog = false
+            },
+            onDismiss = { showCreateQueuePlaylistDialog = false }
+        )
+    }
 
     if (showAddToPlaylistDialog) {
-        com.codetrio.spatialflow.ui.LocalPlaylistPickerDialog(
-            playlists = localPlaylists,
-            onCreateNew = {
+        com.codetrio.spatialflow.ui.dialogs.AddToPlaylistDialog(
+            song = uiState.currentSong,
+            localPlaylists = localPlaylists,
+            onlinePlaylists = onlinePlaylists,
+            isLoggedIn = isLoggedIn,
+            onCreateNewLocal = {
+                createIsOnline = false
                 showCreatePlaylistDialog = true
                 showAddToPlaylistDialog = false
             },
-            onPlaylistSelected = { playlist ->
+            onCreateNewOnline = {
+                createIsOnline = true
+                showCreatePlaylistDialog = true
+                showAddToPlaylistDialog = false
+            },
+            onSelectLocalPlaylist = { playlist ->
                 val currentSong = uiState.currentSong
                 if (currentSong != null) {
                     viewModel.addSongToLocalPlaylist(playlist.id, currentSong)
                     com.codetrio.spatialflow.ui.SnackbarController.showMessage("Added to playlist: ${playlist.title}")
+                }
+                showAddToPlaylistDialog = false
+            },
+            onSelectOnlinePlaylist = { onlinePlaylist ->
+                val currentSong = uiState.currentSong
+                if (currentSong != null) {
+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Adding to YouTube Music...")
+                    viewModel.addSongToYouTubePlaylist(onlinePlaylist.playlistId, currentSong) { success, msg ->
+                        com.codetrio.spatialflow.ui.SnackbarController.showMessage(msg)
+                    }
                 }
                 showAddToPlaylistDialog = false
             },
@@ -159,9 +272,22 @@ fun FullPlayerScreen(
     }
 
     if (showCreatePlaylistDialog) {
-        com.codetrio.spatialflow.ui.CreateLocalPlaylistDialog(
+        com.codetrio.spatialflow.ui.dialogs.CreatePlaylistDialog(
+            isOnline = createIsOnline,
             onConfirm = { name ->
-                viewModel.createLocalPlaylist(name)
+                if (!createIsOnline) {
+                    viewModel.createLocalPlaylist(name)
+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Created local playlist '$name'")
+                } else {
+                    com.codetrio.spatialflow.ui.SnackbarController.showMessage("Creating YouTube Music playlist...")
+                    viewModel.createYouTubePlaylist(name, uiState.currentSong) { success, _ ->
+                        if (success) {
+                            com.codetrio.spatialflow.ui.SnackbarController.showMessage("Created YouTube playlist '$name'")
+                        } else {
+                            com.codetrio.spatialflow.ui.SnackbarController.showMessage("Failed to create YouTube playlist")
+                        }
+                    }
+                }
                 showCreatePlaylistDialog = false
                 showAddToPlaylistDialog = true
             },
@@ -184,58 +310,73 @@ fun FullPlayerScreen(
         lyricsError = lyricsError,
         providerResults = providerResults,
         selectedProvider = selectedProvider,
-        onProviderSelected = { viewModel.selectLyricsProvider(it) },
-        currentPositionProvider = { currentPositionState.value },
+        onProviderSelected = remember(viewModel) { { viewModel.selectLyricsProvider(it) } },
+        currentPositionProvider = remember(viewModel) { { viewModel.currentPosition.value } },
         isAutoplayEnabled = isAutoplayEnabled,
-        onAutoplayToggle = { viewModel.setAutoplayEnabled(!isAutoplayEnabled) },
+        onAutoplayToggle = remember(viewModel) { { viewModel.setAutoplayEnabled(!viewModel.isAutoplayEnabled.value) } },
         onCollapse = onCollapse,
-        onPlayPauseClick = {
-            if (uiState.isPlaying) viewModel.pauseAudio() else viewModel.playAudio()
+        onPlayPauseClick = remember(viewModel) {
+            { if (viewModel.isPlaying.value) viewModel.pauseAudio() else viewModel.playAudio() }
         },
-        onPreviousClick = {
-            viewModel.playPreviousSong()
-        },
-        onNextClick = {
-            viewModel.playNextSong(force = true)
-        },
-        onHapticChipClick = {
-            val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
-                context,
-                android.Manifest.permission.RECORD_AUDIO
-            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        onPreviousClick = remember(viewModel) { { viewModel.playPreviousSong() } },
+        onNextClick = remember(viewModel) { { viewModel.playNextSong(force = true, fromUser = true) } },
+        onHapticChipClick = remember(viewModel, context, permissionLauncher) {
+            {
+                val hasPermission = androidx.core.content.ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.RECORD_AUDIO
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
-            if (!hasPermission) {
-                permissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
-            } else {
-                viewModel.setHapticsEnabled(!uiState.isHapticsEnabled)
+                if (!hasPermission) {
+                    permissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                } else {
+                    viewModel.setHapticsEnabled(!viewModel.isHapticsEnabled.value)
+                }
             }
         },
-        onLyricsModeChanged = { enabled ->
-            viewModel.setLyricsModeEnabled(enabled)
+        onLyricsModeChanged = remember(viewModel) { { enabled: Boolean -> viewModel.setLyricsModeEnabled(enabled) } },
+        onFetchLyrics = remember(viewModel) { { viewModel.fetchLyricsForCurrentSong() } },
+        onRetryLyrics = remember(viewModel) { { viewModel.retryLyrics() } },
+        onSeekTo = remember(viewModel) { { position: Int -> viewModel.seekTo(position) } },
+        onFavoriteClick = remember(viewModel) { { viewModel.toggleFavorite() } },
+        onDislikeClick = remember(viewModel) { { viewModel.toggleDislike() } },
+        onSaveClick = remember { { showAddToPlaylistDialog = true } },
+        onSaveQueueClick = remember { { showSaveQueueDialog = true } },
+        onClearUpcomingClick = remember(viewModel) {
+            {
+                viewModel.clearUpcomingQueue()
+                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Cleared upcoming queue")
+            }
         },
-        onFetchLyrics = {
-            viewModel.fetchLyricsForCurrentSong()
+        onClearAllClick = remember(viewModel) {
+            {
+                viewModel.clearAllExceptCurrent()
+                com.codetrio.spatialflow.ui.SnackbarController.showMessage("Cleared queue except current track")
+            }
         },
-        onRetryLyrics = {
-            viewModel.retryLyrics()
+        onArtistClick = remember(activity, onCollapse) {
+            { artistId: String?, artistName: String ->
+                onCollapse()
+                activity.showArtistPage(artistId, artistName)
+            }
         },
-        onSeekTo = { position ->
-            viewModel.seekTo(position)
-        },
-        onFavoriteClick = {
-            viewModel.toggleFavorite()
-        },
-        onDislikeClick = {
-            viewModel.toggleDislike()
-        },
-        onSaveClick = {
-            showAddToPlaylistDialog = true
-        },
-        onArtistClick = { artistId, artistName ->
-            onCollapse()
-            activity.showArtistPage(artistId, artistName)
+        onAlbumClick = remember(activity, onCollapse, viewModel) {
+            { albumId: String?, albumTitle: String ->
+                onCollapse()
+                val song = viewModel.currentSong.value
+                activity.showAlbumPage(
+                    albumId = albumId,
+                    albumTitle = albumTitle,
+                    artistName = song?.artist,
+                    albumName = song?.albumName,
+                    videoId = song?.videoId
+                )
+            }
         },
         dragModifier = dragModifier,
+        lyricsArtworkAnim = lyricsArtworkAnim,
+        allowCanvas = allowCanvas,
+        allowRealtimeUpdates = allowRealtimeUpdates,
         modifier = modifier
     )
 }
@@ -274,70 +415,83 @@ fun FullPlayer(
     onFavoriteClick: () -> Unit,
     onDislikeClick: () -> Unit,
     onSaveClick: () -> Unit,
+    onSaveQueueClick: () -> Unit = {},
+    onClearUpcomingClick: () -> Unit = {},
+    onClearAllClick: () -> Unit = {},
     providerResults: Map<String, LyricsResult>,
     selectedProvider: String?,
     onProviderSelected: (String) -> Unit,
     isAutoplayEnabled: Boolean,
     onAutoplayToggle: (Boolean) -> Unit,
     onArtistClick: (String?, String) -> Unit = { _, _ -> },
+    onAlbumClick: (String?, String) -> Unit = { _, _ -> },
     dragModifier: Modifier = Modifier,
+    lyricsArtworkAnim: Animatable<Float, androidx.compose.animation.core.AnimationVector1D>,
+    allowCanvas: Boolean = true,
+    allowRealtimeUpdates: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val isDark = isSystemInDarkTheme()
     val canvasArtwork by viewModel.canvasArtwork.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val prefs = remember { context.getSharedPreferences("AppSettings", Context.MODE_PRIVATE) }
-    val showAnimatedArt = prefs.getBoolean("show_animated_art", true)
-    val playerTheme = prefs.getString("player_theme", "fluid") ?: "fluid"
+    val prefs = remember(context) { context.getSharedPreferences("AppSettings", Context.MODE_PRIVATE) }
+    val showAnimatedArt by prefs.observeKey("show_animated_art", true)
+    val playerTheme by prefs.observeKey("player_theme", "fluid")
     val isStatic = playerTheme == "static"
     val hasCanvas = !isStatic && showAnimatedArt && canvasArtwork != null
 
-    val isTextColorDark = !isDark && isStatic
-    val contentColor = if (isTextColorDark) Color(0xFF1C1B1F) else Color.White
-    val contentSecondary = if (isTextColorDark) Color(0xFF1C1B1F).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.6f)
+    val vibrant = PlayerPaletteState.vibrantColor.value
+    val darkVibrant = PlayerPaletteState.darkVibrantColor.value
+    val darkMuted = PlayerPaletteState.darkMutedColor.value
 
-    val dynamicAccentColor = remember(accentColor, isTextColorDark) {
-        val hsl = FloatArray(3)
-        androidx.core.graphics.ColorUtils.colorToHSL(accentColor.toArgb(), hsl)
-        if (hsl[1] < 0.08f) {
-            // Monochromatic / Grayscale
-            if (isTextColorDark) Color(0xFF1C1B1F) else Color.White
-        } else {
-            if (!isTextColorDark) {
-                accentColor
+    val effectiveAccent = remember(hasCanvas, vibrant, accentColor) {
+        if (hasCanvas && vibrant != Color.Black) vibrant else accentColor
+    }
+
+    val playerBackgroundColor =
+        remember(uiState.playerBackgroundColor, isStatic, vibrant, darkVibrant, darkMuted, hasCanvas) {
+            if (hasCanvas && darkMuted != Color.Black) {
+                darkMuted
             } else {
-                hsl[2] = hsl[2].coerceAtMost(0.45f)
-                hsl[1] = hsl[1].coerceAtLeast(0.6f)
-                Color(androidx.core.graphics.ColorUtils.HSLToColor(hsl))
+                resolvePlayerBackgroundColor(
+                    storedBackgroundColor = uiState.playerBackgroundColor,
+                    isStatic = isStatic,
+                    vibrant = vibrant,
+                    darkVibrant = darkVibrant,
+                    darkMuted = darkMuted
+                )
             }
         }
+
+    val bgLuminance = remember(playerBackgroundColor) {
+        androidx.core.graphics.ColorUtils.calculateLuminance(playerBackgroundColor.toArgb())
+    }
+    val isLightBackground = bgLuminance > 0.45f
+
+    val (contentColor, contentSecondary) = remember(bgLuminance) {
+        resolveContentColors(bgLuminance)
     }
 
-    val playerBackgroundColor = remember(uiState.playerBackgroundColor, isTextColorDark) {
-        val baseColor = Color(uiState.playerBackgroundColor)
-        val hsl = FloatArray(3)
-        androidx.core.graphics.ColorUtils.colorToHSL(baseColor.toArgb(), hsl)
-        val isMonochrome = hsl[1] < 0.06f
-        if (!isTextColorDark) {
-            hsl[2] = 0.155f
-            hsl[1] = if (isMonochrome) 0f else hsl[1].coerceIn(0.32f, 0.54f)
-            Color(androidx.core.graphics.ColorUtils.HSLToColor(hsl))
-        } else {
-            hsl[2] = 0.835f
-            hsl[1] = if (isMonochrome) 0f else hsl[1].coerceIn(0.30f, 0.48f)
-            Color(androidx.core.graphics.ColorUtils.HSLToColor(hsl))
-        }
+    val dynamicAccentColor = remember(effectiveAccent, isLightBackground) {
+        resolveDynamicAccentColor(effectiveAccent, isLightBackground)
     }
 
+    val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val hasLyrics = !syncedLyrics.isNullOrEmpty() || !plainLyrics.isNullOrBlank()
-    val currentSongId = uiState.currentSong?.id
-    
+
     // Sliding Queue Drawer State
+    val isPlayerExpanded by viewModel.isPlayerExpanded.collectAsStateWithLifecycle()
     val isQueueExpanded by viewModel.isQueueExpanded.collectAsStateWithLifecycle()
     val isShuffleEnabled by viewModel.isShuffleEnabled.collectAsStateWithLifecycle()
     val repeatMode by viewModel.repeatMode.collectAsStateWithLifecycle()
     val currentSongIndex by viewModel.currentSongIndex.collectAsStateWithLifecycle()
+    val queuePeekOffset = remember { Animatable(0f) }
+    LaunchedEffect(isQueueExpanded) {
+        if (!isQueueExpanded) {
+            queuePeekOffset.snapTo(0f)
+        }
+    }
 
     // Unify BackHandler to collapse the sliding Queue drawer first
     BackHandler(enabled = isLyricsModeEnabled || isQueueExpanded) {
@@ -350,595 +504,712 @@ fun FullPlayer(
 
     // Sleep Timer State & Controller Dialog state
     var showSleepTimerDialog by remember { mutableStateOf(false) }
+    var showPlayerOptionsSheet by remember { mutableStateOf(false) }
+    var showLyricsOptionsSheet by remember { mutableStateOf(false) }
+    var syncOffsetMs by remember { mutableStateOf(0L) }
+    var selectedLyricForShare by remember { mutableStateOf<LyricLine?>(null) }
     val sleepTimerMode by viewModel.sleepTimerMode.collectAsStateWithLifecycle()
     val sleepTimerEndTime by viewModel.sleepTimerEndTime.collectAsStateWithLifecycle()
 
-    // ── Palette extraction pipeline (spec §2.2) ─────────────────────────────────
-    // Triggered whenever the playing track's artwork changes.
-    // Runs entirely on Dispatchers.IO — never blocks the main thread.
-    // Downloads artwork → BitmapResolver.bitmapCompress (64 px square, RGB_565) →
-    // AndroidX Palette.generate() → writes vibrant / darkVibrant / darkMuted into
-    // PlayerPaletteState (global singleton). Falls back to Color.Black on missing swatch.
-    // ── Palette extraction key ────────────────────────────────────────────────────
-    // IMPORTANT: for local MP3 files, thumbnailUrl AND videoId are both null.
-    // We MUST include getAlbumArtUri() first, otherwise artworkKey is null and
-    // the LaunchedEffect short-circuits → PlayerPaletteState stays Color.Black → pitch black.
-    val artworkKey = remember(uiState.currentSong) {
-        uiState.currentSong?.let { song ->
-            song.getAlbumArtUri()?.toString()       // local MP3 embedded art  (content://)
-                ?: song.thumbnailUrl                 // YouTube Music stream
-                ?: song.videoId?.let { "yt_$it" }   // YouTube video ID fallback
-        }
+    val onShowPlayerOptions = remember { { showPlayerOptionsSheet = true } }
+    val onShowLyricsOptions = remember { { showLyricsOptionsSheet = true } }
+    val onLineLongClick = remember { { line: LyricLine -> selectedLyricForShare = line } }
+    val onQueueExpandedChange = remember(viewModel) { { expanded: Boolean -> viewModel.setQueueExpanded(expanded) } }
+    val onReorderQueue = remember(viewModel) { { from: Int, to: Int -> viewModel.reorderQueue(from, to) } }
+    val onPlaySongAtIndex = remember(viewModel) { { index: Int -> viewModel.playSongAtIndex(index) } }
+    val onRemoveSongAtIndex = remember(viewModel) { { index: Int -> viewModel.removeSongAtIndex(index) } }
+    val onToggleShuffle = remember(viewModel) { { viewModel.toggleShuffle() } }
+    val onToggleLoopMode = remember(viewModel) { { viewModel.toggleLoopMode() } }
+    val onShowSleepTimerDialog = remember { { showSleepTimerDialog = true } }
+
+    val lyricsProgressAnim = lyricsArtworkAnim
+
+    val effectivePositionProvider = remember(currentPositionProvider, syncOffsetMs) {
+        { (currentPositionProvider() + syncOffsetMs).toInt().coerceAtLeast(0) }
     }
-    val paletteContext = context
-    LaunchedEffect(artworkKey) {
-        if (artworkKey == null) return@LaunchedEffect
 
-        withContext(Dispatchers.IO) {
-            val song = uiState.currentSong ?: return@withContext
-            // artworkData priority: local URI → thumbnail URL → YouTube fallback
-            val artworkData: Any = song.getAlbumArtUri()
-                ?: song.thumbnailUrl
-                ?: song.videoId?.let { "https://img.youtube.com/vi/$it/hqdefault.jpg" }
-                ?: return@withContext
-
-            val loader = ImageLoader(paletteContext)
-            try {
-                val request = ImageRequest.Builder(paletteContext)
-                    .data(artworkData)
-                    .allowHardware(false) // hardware bitmaps cannot be read by Palette
-                    .build()
-
-                // Step 1 — download/load artwork
-                val thisBitmap = loader.execute(request).drawable
-                    ?.toBitmap()
-                    ?.run { BitmapResolver.bitmapCompress(this) }  // 64 px, RGB_565
-
-                if (thisBitmap != null) {
-                    try {
-                        // Step 2 — run AndroidX Palette on the compressed bitmap
-                        val palette = Palette.from(thisBitmap).generate()
-
-                        // Use dominantSwatch as non-black fallback when a specific
-                        // swatch is missing (dark/monochromatic art like "After Dark").
-                        val dominant = palette.dominantSwatch?.rgb?.let { Color(it) }
-
-                        PlayerPaletteState.vibrantColor.value =
-                            palette.vibrantSwatch?.rgb?.let { Color(it) } ?: Color.Black
-
-                        PlayerPaletteState.darkVibrantColor.value =
-                            palette.darkVibrantSwatch?.rgb?.let { Color(it) } ?: Color.Black
-
-                        PlayerPaletteState.darkMutedColor.value =
-                            palette.darkMutedSwatch?.rgb?.let { Color(it) } ?: Color.Black
-
-                    } catch (_: Exception) { /* palette failure — keep existing colors */ }
-
-                    thisBitmap.recycle() // ← always recycle to avoid OOM
-                }
-            } finally {
-                loader.shutdown() // ← always shut down the loader
+    val artworkKey =
+        remember(uiState.currentSong?.id, uiState.currentSong?.thumbnailUrl, uiState.currentSong?.videoId) {
+            uiState.currentSong?.let { song ->
+                song.getAlbumArtUri()?.toString()
+                    ?: song.thumbnailUrl
+                    ?: song.videoId?.let { "yt_$it" }
             }
         }
-    }
-    // ── End palette extraction ──────────────────────────────────────────────────
+
+    PlayerPaletteEffect(
+        artworkKey = artworkKey,
+        currentSong = uiState.currentSong,
+        canvasArtwork = canvasArtwork,
+        context = context
+    )
+
+    val metrics = computeScreenMetrics()
+    val twoPane = metrics.isLandscape
+    val albumArtSize = metrics.albumArtSize
 
     AppleMusicBackground(
         song = uiState.currentSong,
         canvasArtwork = canvasArtwork,
-        isPlaying = uiState.isPlaying,
+        isPlaying = uiState.isPlaying && allowCanvas && isPlayerExpanded && allowRealtimeUpdates,
         isLyricsModeEnabled = isLyricsModeEnabled,
+        allowCanvas = allowCanvas && isPlayerExpanded && allowRealtimeUpdates,
         modifier = modifier
             .fillMaxSize()
             .then(if (isQueueExpanded || isLyricsModeEnabled) Modifier else dragModifier)
+            .pointerInput(isQueueExpanded, isLyricsModeEnabled) {
+                if (isQueueExpanded || isLyricsModeEnabled) {
+                    return@pointerInput
+                }
+                val queueDragActivationThresholdPx = 18.dp.toPx()
+                val minFlingTravelPx = 32.dp.toPx()
+                val dragThresholdPx = 48.dp.toPx()
+                val quickFlickVelocityThreshold = -520f
+                val queueGestureBottomExclusionPx = 220.dp.toPx()
+
+                val offsetChannel =
+                    kotlinx.coroutines.channels.Channel<Float>(kotlinx.coroutines.channels.Channel.CONFLATED)
+
+                kotlinx.coroutines.coroutineScope {
+                    launch {
+                        for (targetOffset in offsetChannel) {
+                            queuePeekOffset.snapTo(targetOffset)
+                        }
+                    }
+
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val bottomGestureBoundaryY =
+                            (size.height.toFloat() - queueGestureBottomExclusionPx).coerceAtLeast(0f)
+                        if (down.position.y >= bottomGestureBoundaryY) {
+                            // Let transport controls, seekbar, and bottom controls handle all touches cleanly
+                            return@awaitEachGesture
+                        }
+
+                        var dragConsumedByQueue = false
+                        val velocityTracker = VelocityTracker()
+                        var totalDrag = 0f
+                        velocityTracker.addPosition(down.uptimeMillis, down.position)
+
+                        drag(down.id) { change ->
+                            val dragAmount = change.positionChange().y
+                            totalDrag += dragAmount
+                            velocityTracker.addPosition(change.uptimeMillis, change.position)
+                            val isDraggingUp = totalDrag < -queueDragActivationThresholdPx
+
+                            if (isDraggingUp && !dragConsumedByQueue) {
+                                dragConsumedByQueue = true
+                            }
+
+                            if (dragConsumedByQueue) {
+                                change.consume()
+                                val targetPeekOffset = (-totalDrag).coerceAtLeast(0f)
+                                offsetChannel.trySend(targetPeekOffset)
+                            }
+                        }
+
+                        val velocity = velocityTracker.calculateVelocity().y
+                        val isFastUpward = velocity < quickFlickVelocityThreshold
+                        val hasMeaningfulUpwardTravel = totalDrag < -minFlingTravelPx
+                        val hasQuickUpwardTravel = totalDrag < -(minFlingTravelPx * 0.35f)
+                        val shouldExpandFromQuickFling =
+                            isFastUpward && (hasMeaningfulUpwardTravel || hasQuickUpwardTravel)
+                        val shouldExpand = shouldExpandFromQuickFling || (totalDrag < -dragThresholdPx)
+
+                        if (shouldExpand) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.setQueueExpanded(true)
+                        } else if (queuePeekOffset.value > 0f) {
+                            scope.launch {
+                                queuePeekOffset.animateTo(
+                                    0f,
+                                    animationSpec = spring(
+                                        dampingRatio = Spring.DampingRatioNoBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
     ) {
-        val configuration = LocalConfiguration.current
-        val screenWidth = configuration.screenWidthDp.dp
-        val screenHeight = configuration.screenHeightDp.dp
-        val albumArtSize = androidx.compose.ui.unit.min(screenWidth * 0.9f, screenHeight * 0.45f)
 
-        val density = androidx.compose.ui.platform.LocalDensity.current
-        val statusBarTopDp = with(density) { androidx.compose.foundation.layout.WindowInsets.statusBars.getTop(this).toDp() }
-        val minTopOffset = statusBarTopDp + 68.dp // Removed 16.dp extra gap
+        CompositionLocalProvider(LocalScreenMetrics provides metrics) {
+            val dimens = com.codetrio.spatialflow.ui.theme.LocalDimens.current
 
-        // Calculate top offset to perfectly match yEndPx in PlayerBottomSheetCompose
-        val topOffset = ((screenHeight - albumArtSize) / 2f - 220.dp).coerceAtLeast(minTopOffset)
+            // Standard vs lyrics cross-fade drivers (shared by both layouts).
+            // Animation progress is consumed purely in graphicsLayer draw-phase to eliminate per-frame recomposition lag.
+            val isLyricsAnimRunning = lyricsProgressAnim.isRunning
+            val showStandardContent = !isLyricsModeEnabled || isLyricsAnimRunning
+            val showLyricsContent = isLyricsModeEnabled || isLyricsAnimRunning
 
-        val dimens = com.codetrio.spatialflow.ui.theme.LocalDimens.current
-        val isTablet = configuration.screenWidthDp >= 600
+            // --- Apple Music-style lyrics controls auto hide & show ---
+            var controlsRevealToken by remember { mutableIntStateOf(0) }
+            var controlsHiddenByTimeout by remember { mutableStateOf(false) }
 
-        val rightPaneContent: @Composable () -> Unit = {
-            // Metadata row: title/artist
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text(
-                        text = uiState.currentSong?.title ?: "Unknown Title",
-                        style = MaterialTheme.typography.headlineMediumEmphasized,
-                        fontWeight = FontWeight.Bold,
-                        color = contentColor,
-                        maxLines = 1,
-                        modifier = Modifier.basicMarqueeWithFadedEdges()
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = uiState.currentSong?.artist ?: "Unknown Artist",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = contentSecondary,
-                        maxLines = 1,
-                        modifier = Modifier
-                            .basicMarqueeWithFadedEdges()
-                            .clickable {
-                                val song = uiState.currentSong
-                                if (song != null) {
-                                    onArtistClick(song.artistId, song.artist)
-                                }
+            val pokeLyricsControls: () -> Unit = remember { { controlsRevealToken++ } }
+
+            // 3-second auto-hide countdown; cancels and restarts every time controlsRevealToken updates
+            LaunchedEffect(uiState.currentSong?.id, isLyricsModeEnabled, controlsRevealToken) {
+                controlsHiddenByTimeout = false
+                if (!isLyricsModeEnabled) return@LaunchedEffect
+                delay(3000L)
+                controlsHiddenByTimeout = true
+            }
+
+            val controlsVisible = !isLyricsModeEnabled || !controlsHiddenByTimeout
+
+            val controlsFadeDurationMs = 260
+            val controlsFadeInSpec = remember { tween<Float>(durationMillis = controlsFadeDurationMs, easing = FastOutSlowInEasing) }
+            val controlsFadeOutSpec = remember { tween<Float>(durationMillis = controlsFadeDurationMs, easing = FastOutSlowInEasing) }
+            val controlsExpandSpec = remember { tween<IntSize>(durationMillis = controlsFadeDurationMs, easing = FastOutSlowInEasing) }
+            val controlsShrinkSpec = remember { tween<IntSize>(durationMillis = controlsFadeDurationMs, easing = FastOutSlowInEasing) }
+
+            val lyricsScrollConnection = remember(isLyricsModeEnabled) {
+                var lastScrollPokeMs = 0L
+                object : NestedScrollConnection {
+                    override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                        // Only trigger on explicit user touch scroll gestures; song auto-advancing line by line does NOT trigger this
+                        if (isLyricsModeEnabled && source == NestedScrollSource.UserInput && abs(available.y) > 0.5f) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastScrollPokeMs > 80L) {
+                                lastScrollPokeMs = now
+                                pokeLyricsControls()
                             }
-                    )
+                        }
+                        return Offset.Zero
+                    }
+
+                    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+                        if (isLyricsModeEnabled) {
+                            pokeLyricsControls()
+                        }
+                        return super.onPostFling(consumed, available)
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            // Bottom transport controls (seek bar + prev / play-pause / next). Defined once and
+            // placed per layout: under the right (metadata) pane in two-pane, full width in portrait.
+            val transportControls: @Composable () -> Unit = {
+                PlayerTransportControls(
+                    currentPositionProvider = currentPositionProvider,
+                    duration = uiState.duration,
+                    isPlaying = uiState.isPlaying,
+                    isProcessing = uiState.isProcessing,
+                    playbackFormat = uiState.playbackFormat,
+                    contentColor = contentColor,
+                    contentSecondary = contentSecondary,
+                    dynamicAccentColor = dynamicAccentColor,
+                    isDark = isDark,
+                    metrics = metrics,
+                    onSeekTo = { pos ->
+                        pokeLyricsControls()
+                        onSeekTo(pos)
+                    },
+                    onPreviousClick = {
+                        pokeLyricsControls()
+                        onPreviousClick()
+                    },
+                    onPlayPauseClick = {
+                        pokeLyricsControls()
+                        onPlayPauseClick()
+                    },
+                    onNextClick = {
+                        pokeLyricsControls()
+                        onNextClick()
+                    },
+                    currentPositionFlow = viewModel.currentPosition,
+                    allowRealtimeUpdates = allowRealtimeUpdates
+                )
+            }
 
-            // Premium YT Music style horizontal control chips row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .layout { measurable, constraints ->
-                        val pad = 20.dp.roundToPx()
-                        val placeable = measurable.measure(
-                            constraints.copy(
-                                maxWidth = constraints.maxWidth + 2 * pad
-                            )
-                        )
-                        layout(placeable.width - 2 * pad, placeable.height) {
-                            placeable.place(-pad, 0)
-                        }
-                    }
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Spacer(modifier = Modifier.width(12.dp))
+            val songInfo: @Composable () -> Unit = {
+                PlayerSongInfo(
+                    currentSong = uiState.currentSong,
+                    contentColor = contentColor,
+                    metrics = metrics,
+                    onAlbumClick = onAlbumClick,
+                    onArtistClick = onArtistClick
+                )
+            }
 
-                SplitLikeDislikeChip(
-                    isLiked = uiState.isCurrentSongFavorite,
-                    isDisliked = uiState.isCurrentSongDisliked,
+            val pillGroup: @Composable () -> Unit = {
+                PlayerPillGroup(
+                    currentSong = uiState.currentSong,
+                    isCurrentSongFavorite = uiState.isCurrentSongFavorite,
+                    isCurrentSongDisliked = uiState.isCurrentSongDisliked,
                     likesCount = uiState.likesCount,
-                    onLikeClick = onFavoriteClick,
+                    isHapticsEnabled = uiState.isHapticsEnabled,
+                    isLyricsModeEnabled = isLyricsModeEnabled,
+                    hasLyrics = hasLyrics,
+                    isLyricsLoading = isLyricsLoading,
+                    isCurrentSongDownloaded = uiState.isCurrentSongDownloaded,
+                    currentSongDownloadProgress = uiState.currentSongDownloadProgress,
+                    contentColor = contentColor,
+                    dynamicAccentColor = dynamicAccentColor,
+                    isDark = isDark,
+                    onFavoriteClick = onFavoriteClick,
                     onDislikeClick = onDislikeClick,
-                    contentColor = contentColor,
-                    accentColor = dynamicAccentColor,
-                    isDark = isDark
-                )
-
-                // Interactive Music Haptics Chip inside the same row
-                PillChip(
-                    icon = painterResource(id = R.drawable.ic_haptic),
-                    label = "Music Haptics",
-                    isSelected = uiState.isHapticsEnabled,
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onHapticChipClick()
-                    },
-                    contentColor = contentColor,
-                    accentColor = dynamicAccentColor,
-                    isDark = isDark
-                )
-
-                // Interactive Lyrics Chip inside the same row
-                PillChip(
-                    icon = painterResource(id = R.drawable.ic_lyrics),
-                    label = "Lyrics",
-                    isSelected = isLyricsModeEnabled,
-                    onClick = {
-                        onLyricsModeChanged(true)
-                        if (currentSongId != null && !hasLyrics && !isLyricsLoading) {
-                            onFetchLyrics()
-                        }
-                    },
-                    contentColor = contentColor,
-                    accentColor = dynamicAccentColor,
-                    isDark = isDark
-                )
-
-
-                PillChip(
-                    icon = Icons.Rounded.PlaylistAdd,
-                    label = "Save",
-                    onClick = onSaveClick,
-                    contentColor = contentColor,
-                    accentColor = dynamicAccentColor,
-                    isDark = isDark
-                )
-
-                PillChip(
-                    icon = painterResource(id = R.drawable.ic_share),
-                    label = "Share",
-                    onClick = {
-                        val shareIntent = Intent().apply {
-                            action = Intent.ACTION_SEND
-                            putExtra(Intent.EXTRA_TEXT, "Listening on SpatialFlow Check out : https://music.youtube.com/watch?v=${uiState.currentSong?.videoId}")
-                            type = "text/plain"
-                        }
-                        context.startActivity(Intent.createChooser(shareIntent, "Share Track"))
-                    },
-                    contentColor = contentColor,
-                    accentColor = dynamicAccentColor,
-                    isDark = isDark
-                )
-
-                val realDownloaded = uiState.isCurrentSongDownloaded
-                val realDownloadProgress = uiState.currentSongDownloadProgress
-                val isDownloading = realDownloadProgress != null
-
-                val downloadLabel = when {
-                    realDownloaded -> "Downloaded"
-                    isDownloading -> "Downloading ${realDownloadProgress}%"
-                    else -> "Download"
-                }
-                val downloadIcon: Any = when {
-                    realDownloaded -> painterResource(id = R.drawable.ic_downloaded)
-                    else -> painterResource(id = R.drawable.ic_download)
-                }
-                PillChip(
-                    icon = downloadIcon,
-                    label = downloadLabel,
-                    isSelected = realDownloaded || isDownloading,
-                    progress = if (isDownloading) realDownloadProgress / 100f else null,
-                    onClick = {
-                        val currentSong = uiState.currentSong
-                        if (currentSong != null && !realDownloaded && !isDownloading) {
-                            com.codetrio.spatialflow.util.SongDownloader.downloadSong(context, currentSong)
-                        }
-                    },
-                    contentColor = contentColor,
-                    accentColor = dynamicAccentColor,
-                    isDark = isDark
-                )
-
-                Spacer(modifier = Modifier.width(12.dp))
-            }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Premium Wavy Seek Bar (Isolated)
-            WavySliderWithLabels(
-                currentPositionProvider = currentPositionProvider,
-                duration = uiState.duration,
-                isPlaying = uiState.isPlaying,
-                onSeekTo = onSeekTo,
-                dynamicAccentColor = dynamicAccentColor,
-                contentColor = contentColor,
-                contentSecondary = contentSecondary,
-                isDark = isDark,
-                playbackFormat = uiState.playbackFormat
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            androidx.compose.material3.ButtonGroup(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                expandedRatio = 0.3f,
-                overflowIndicator = {}
-            ) {
-                val scope = this
-                customItem(
-                    buttonGroupContent = {
-                        val interactionSource = remember { MutableInteractionSource() }
-                        val isPressed by interactionSource.collectIsPressedAsState()
-                        val cornerRadius by animateDpAsState(
-                            targetValue = if (isPressed) 12.dp else 28.dp,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessMedium
-                            ),
-                            label = "PrevCorner"
-                        )
-                        androidx.compose.material3.Button(
-                            onClick = onPreviousClick,
-                            modifier = with(scope) {
-                                Modifier
-                                    .animateWidth(interactionSource)
-                                    .weight(1f)
-                                    .height(76.dp)
-                            },
-                            interactionSource = interactionSource,
-                            shape = RoundedCornerShape(cornerRadius),
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                containerColor = contentColor.copy(alpha = if (isDark) 0.08f else 0.06f),
-                                contentColor = contentColor
-                            ),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_skip_previous),
-                                    contentDescription = "Previous Song",
-                                    modifier = Modifier.size(36.dp)
-                                )
-                            }
-                        }
-                    },
-                    menuContent = {}
-                )
-                customItem(
-                    buttonGroupContent = {
-                        val interactionSource = remember { MutableInteractionSource() }
-                        val isPressed by interactionSource.collectIsPressedAsState()
-                        val cornerRadius by animateDpAsState(
-                            targetValue = if (isPressed) 12.dp else 28.dp,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessMedium
-                            ),
-                            label = "PlayCorner"
-                        )
-                        androidx.compose.material3.Button(
-                            onClick = onPlayPauseClick,
-                            modifier = with(scope) {
-                                Modifier
-                                    .animateWidth(interactionSource)
-                                    .weight(1.2f)
-                                    .height(76.dp)
-                            },
-                            interactionSource = interactionSource,
-                            shape = RoundedCornerShape(cornerRadius),
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                containerColor = dynamicAccentColor,
-                                contentColor = if (isDark) Color(0xFF1C1B1F) else Color.White
-                            ),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = if (uiState.isPlaying) R.drawable.ic_pause else R.drawable.ic_play),
-                                    contentDescription = if (uiState.isPlaying) "Pause" else "Play",
-                                    modifier = Modifier.size(42.dp)
-                                )
-                            }
-                        }
-                    },
-                    menuContent = {}
-                )
-                customItem(
-                    buttonGroupContent = {
-                        val interactionSource = remember { MutableInteractionSource() }
-                        val isPressed by interactionSource.collectIsPressedAsState()
-                        val cornerRadius by animateDpAsState(
-                            targetValue = if (isPressed) 12.dp else 28.dp,
-                            animationSpec = spring(
-                                dampingRatio = Spring.DampingRatioMediumBouncy,
-                                stiffness = Spring.StiffnessMedium
-                            ),
-                            label = "NextCorner"
-                        )
-                        androidx.compose.material3.Button(
-                            onClick = onNextClick,
-                            modifier = with(scope) {
-                                Modifier
-                                    .animateWidth(interactionSource)
-                                    .weight(1f)
-                                    .height(76.dp)
-                            },
-                            interactionSource = interactionSource,
-                            shape = RoundedCornerShape(cornerRadius),
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                containerColor = contentColor.copy(alpha = if (isDark) 0.08f else 0.06f),
-                                contentColor = contentColor
-                            ),
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    painter = painterResource(id = R.drawable.ic_skip_next),
-                                    contentDescription = "Next Song",
-                                    modifier = Modifier.size(36.dp)
-                                )
-                            }
-                        }
-                    },
-                    menuContent = {}
+                    onHapticChipClick = onHapticChipClick,
+                    onLyricsModeChanged = onLyricsModeChanged,
+                    onFetchLyrics = onFetchLyrics,
+                    onSaveClick = onSaveClick,
+                    onDownloadClick = {},
+                    chipSpacing = metrics.chipSpacing
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            val metadataChips: @Composable () -> Unit = {
+                PlayerMetadataChips(
+                    currentSong = uiState.currentSong,
+                    isCurrentSongFavorite = uiState.isCurrentSongFavorite,
+                    isCurrentSongDisliked = uiState.isCurrentSongDisliked,
+                    likesCount = uiState.likesCount,
+                    isHapticsEnabled = uiState.isHapticsEnabled,
+                    isLyricsModeEnabled = isLyricsModeEnabled,
+                    hasLyrics = hasLyrics,
+                    isLyricsLoading = isLyricsLoading,
+                    isCurrentSongDownloaded = uiState.isCurrentSongDownloaded,
+                    currentSongDownloadProgress = uiState.currentSongDownloadProgress,
+                    contentColor = contentColor,
+                    dynamicAccentColor = dynamicAccentColor,
+                    isDark = isDark,
+                    metrics = metrics,
+                    onFavoriteClick = onFavoriteClick,
+                    onDislikeClick = onDislikeClick,
+                    onHapticChipClick = onHapticChipClick,
+                    onLyricsModeChanged = onLyricsModeChanged,
+                    onFetchLyrics = onFetchLyrics,
+                    onSaveClick = onSaveClick,
+                    onDownloadClick = {},
+                    onAlbumClick = onAlbumClick,
+                    onArtistClick = onArtistClick
+                )
+            }
 
-            // Swipe Up / Click Chevron Up Indicator to expand Queue
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(48.dp)
-                    .pointerInput(Unit) {
-                        detectVerticalDragGestures { _, dragAmount ->
-                            if (dragAmount < -10f && !isQueueExpanded && !isLyricsModeEnabled) {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.setQueueExpanded(true)
-                            }
-                        }
-                    }
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.setQueueExpanded(true)
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_keyboard_arrow_down),
-                    contentDescription = "Open Queue",
-                    tint = contentColor.copy(alpha = 0.5f),
+            val lyricsView: @Composable () -> Unit = {
+                PlayerLyricsView(
+                    syncedLyrics = syncedLyrics,
+                    plainLyrics = plainLyrics,
+                    isLyricsLoading = isLyricsLoading,
+                    lyricsError = lyricsError,
+                    providerResults = providerResults,
+                    selectedProvider = selectedProvider,
+                    currentSong = uiState.currentSong,
+                    contentColor = contentColor,
+                    dynamicAccentColor = dynamicAccentColor,
+                    isPlaying = uiState.isPlaying,
+                    effectivePositionProvider = effectivePositionProvider,
+                    onSeekTo = onSeekTo,
+                    onRetryLyrics = onRetryLyrics,
+                    onFetchLyrics = onFetchLyrics,
+                    onLineLongClick = onLineLongClick,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            // Fades the standard (metadata) content out and up as lyrics take over.
+            val standardFade: Modifier = Modifier.graphicsLayer {
+                val progress = lyricsProgressAnim.value
+                alpha = (1f - progress).coerceIn(0f, 1f)
+                translationY = -24.dp.toPx() * progress
+                scaleX = 1f - 0.04f * progress
+                scaleY = 1f - 0.04f * progress
+            }
+            // Fades the lyrics content in and up from below.
+            val lyricsFade: Modifier = Modifier.graphicsLayer {
+                val progress = lyricsProgressAnim.value
+                alpha = progress.coerceIn(0f, 1f)
+                translationY = 24.dp.toPx() * (1f - progress)
+                scaleX = 0.96f + 0.04f * progress
+                scaleY = 0.96f + 0.04f * progress
+            }
+
+            if (twoPane) {
+                // TWO-PANE (landscape / tablet): Header removed so player covers the entire area.
+                // Album art lives in the LEFT pane and STAYS there even in lyrics mode.
+                // The RIGHT pane cross-fades metadata <-> lyrics on top, with transport controls pinned below.
+                // Minimize player button and 3-dots options button float at the top corners without the "NOW PLAYING" header.
+                Box(
                     modifier = Modifier
-                        .size(32.dp)
-                        .graphicsLayer { rotationZ = 180f }
-                )
-            }
-        }
-
-        AnimatedVisibility(
-            visible = !isLyricsModeEnabled,
-            enter = fadeIn(animationSpec = spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow)),
-            exit = fadeOut(animationSpec = spring(dampingRatio = 0.88f, stiffness = Spring.StiffnessMediumLow)),
-            modifier = Modifier.fillMaxSize()
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(horizontal = dimens.screenMargin, vertical = dimens.smallPadding),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Header Row (Nav controls + collapse) - Symmetric centering
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = dimens.screenMargin, vertical = dimens.smallPadding)
                 ) {
-                    IconButton(onClick = onCollapse) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_keyboard_arrow_down),
-                            contentDescription = "Collapse Player",
-                            tint = contentColor.copy(alpha = 0.8f),
-                            modifier = Modifier.size(28.dp)
-                        )
-                    }
-
-                    if (!hasCanvas || isLyricsModeEnabled) {
-                        Text(
-                            text = "NOW PLAYING",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = contentSecondary
-                        )
-                    } else {
-                        Spacer(modifier = Modifier.size(48.dp))
-                    }
-
-                    Spacer(modifier = Modifier.size(48.dp))
-                }
-
-                if (isTablet) {
                     Row(
                         modifier = Modifier.fillMaxSize(),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // LEFT: artwork placeholder (real artwork is the shared floating layer in the host)
                         Box(
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight(),
                             contentAlignment = Alignment.Center
                         ) {
                             Box(modifier = Modifier.size(albumArtSize))
                         }
+
+                        // RIGHT: metadata/lyrics area (weight) + controls (wrap) below it.
                         Column(
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
                         ) {
-                            rightPaneContent()
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (showStandardContent) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .then(standardFade),
+                                        contentAlignment = Alignment.BottomCenter
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            verticalArrangement = Arrangement.Bottom
+                                        ) {
+                                            songInfo()
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                        }
+                                    }
+                                }
+                                if (showLyricsContent) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .then(lyricsFade)
+                                            .nestedScroll(lyricsScrollConnection)
+                                            .pointerInput(Unit) {
+                                                detectTapGestures(
+                                                    onTap = { pokeLyricsControls() }
+                                                )
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        lyricsView()
+                                    }
+                                }
+                            }
+
+                            AnimatedVisibility(
+                                visible = controlsVisible,
+                                enter = fadeIn(animationSpec = controlsFadeInSpec) + expandVertically(
+                                    animationSpec = controlsExpandSpec,
+                                    expandFrom = Alignment.Bottom
+                                ),
+                                exit = fadeOut(animationSpec = controlsFadeOutSpec) + shrinkVertically(
+                                    animationSpec = controlsShrinkSpec,
+                                    shrinkTowards = Alignment.Bottom
+                                ),
+                                label = "lyrics-playback-controls-landscape"
+                            ) {
+                                Column(modifier = Modifier.fillMaxWidth()) {
+                                    // In landscape, pill group is ALWAYS on top of the seekbar (just like Portrait)
+                                    pillGroup()
+
+                                    transportControls()
+
+                                    AudioOutputIndicator(
+                                        contentColor = contentColor,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 2.dp, bottom = 4.dp)
+                                    )
+                                }
+                            }
                         }
                     }
-                } else {
-                    Spacer(modifier = Modifier.height(topOffset - (statusBarTopDp + 68.dp)))
 
-                    // Album Art Container Placeholder (ArtworkPager is rendered at this absolute position)
-                    Box(
-                        modifier = Modifier.size(albumArtSize)
+                    // Floating top controls: minimize player (left) and 3-dots options (right)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.TopCenter),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = onCollapse
+                        ) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_keyboard_arrow_down),
+                                contentDescription = "Collapse Player",
+                                tint = contentColor.copy(alpha = 0.8f),
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = {
+                                if (isLyricsModeEnabled) onShowLyricsOptions() else onShowPlayerOptions()
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.MoreVert,
+                                contentDescription = if (isLyricsModeEnabled) "Lyrics Options" else "Player Options",
+                                tint = contentColor.copy(alpha = 0.8f),
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                // PORTRAIT: single column with PlayerHeaderBar ("NOW PLAYING", minimize, 3 dots),
+                // artwork + metadata, with lyrics overlaying the full area; controls pinned below.
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = dimens.screenMargin, vertical = dimens.smallPadding),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    PlayerHeaderBar(
+                        isLyricsModeEnabled = isLyricsModeEnabled,
+                        hasCanvas = hasCanvas,
+                        currentSong = uiState.currentSong,
+                        lyricsProgressAnim = lyricsProgressAnim,
+                        contentColor = contentColor,
+                        contentSecondary = contentSecondary,
+                        onCollapse = onCollapse,
+                        onLyricsModeChanged = onLyricsModeChanged,
+                        onShowPlayerOptions = onShowPlayerOptions,
+                        onShowLyricsOptions = onShowLyricsOptions
                     )
 
-                    Spacer(modifier = Modifier.height(28.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (showStandardContent) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .then(standardFade),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxSize(),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Spacer(modifier = Modifier.weight(1f))
 
-                    rightPaneContent()
+                                    Box(modifier = Modifier.size(albumArtSize))
+
+                                    Spacer(modifier = Modifier.height(16.dp))
+
+                                    metadataChips()
+                                }
+                            }
+                        }
+
+                        if (showLyricsContent) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .then(lyricsFade)
+                                    .nestedScroll(lyricsScrollConnection)
+                                    .pointerInput(Unit) {
+                                        detectTapGestures(
+                                            onTap = { pokeLyricsControls() }
+                                        )
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                lyricsView()
+                            }
+                        }
+                    }
+
+                    AnimatedVisibility(
+                        visible = controlsVisible,
+                        enter = fadeIn(animationSpec = controlsFadeInSpec) + expandVertically(
+                            animationSpec = controlsExpandSpec,
+                            expandFrom = Alignment.Bottom
+                        ),
+                        exit = fadeOut(animationSpec = controlsFadeOutSpec) + shrinkVertically(
+                            animationSpec = controlsShrinkSpec,
+                            shrinkTowards = Alignment.Bottom
+                        ),
+                        label = "lyrics-playback-controls"
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            transportControls()
+
+                            AudioOutputIndicator(
+                                contentColor = contentColor,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp, bottom = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                    }
                 }
             }
-        }
 
-        LyricsBottomSheet(
-            visible = isLyricsModeEnabled,
-            currentSong = uiState.currentSong,
-            syncedLyrics = syncedLyrics,
-            plainLyrics = plainLyrics,
-            isLoading = isLyricsLoading,
-            lyricsError = lyricsError,
-            currentPositionProvider = currentPositionProvider,
-            contentReady = true,
-            playerBackgroundColor = playerBackgroundColor,
-            canvasArtwork = canvasArtwork,
-            contentColor = contentColor,
-            contentSecondary = contentSecondary,
-            dynamicAccentColor = dynamicAccentColor,
-            onRetryLyrics = onRetryLyrics,
-            onFetchLyrics = onFetchLyrics,
-            onSeekTo = onSeekTo,
-            providerResults = providerResults,
-            selectedProvider = selectedProvider,
-            onProviderSelected = onProviderSelected,
-            isPlaying = uiState.isPlaying,
-            onPlayPauseClick = onPlayPauseClick,
-            duration = uiState.duration.toLong(),
-            onCollapse = { viewModel.setLyricsModeEnabled(false) },
-            modifier = Modifier.fillMaxSize()
-        )
+            // --- CUSTOM EMBEDDED SLIDING PLAY QUEUE ---
+            if (!isLyricsModeEnabled) {
+                SlidingQueueDrawer(
+                    isQueueExpanded = isQueueExpanded,
+                    onQueueExpandedChange = onQueueExpandedChange,
+                    songList = songList,
+                    currentSongIndex = currentSongIndex,
+                    isShuffleEnabled = isShuffleEnabled,
+                    repeatMode = repeatMode,
+                    sleepTimerMode = sleepTimerMode,
+                    onReorderQueue = onReorderQueue,
+                    onPlaySongAtIndex = onPlaySongAtIndex,
+                    onRemoveSongAtIndex = onRemoveSongAtIndex,
+                    onToggleShuffle = onToggleShuffle,
+                    onToggleLoopMode = onToggleLoopMode,
+                    onShowSleepTimerDialog = onShowSleepTimerDialog,
+                    playerBackgroundColor = playerBackgroundColor.toArgb(),
+                    dynamicAccentColor = dynamicAccentColor,
+                    isDark = isDark,
+                    isAutoplayEnabled = isAutoplayEnabled,
+                    onAutoplayToggle = onAutoplayToggle,
+                    queueTitle = viewModel.currentQueue?.currentTitle,
+                    onSaveQueueClick = onSaveQueueClick,
+                    onClearUpcomingClick = onClearUpcomingClick,
+                    onClearAllClick = onClearAllClick,
+                    peekOffsetPxProvider = { queuePeekOffset.value }
+                )
+            }
 
-        // --- CUSTOM EMBEDDED SLIDING PLAY QUEUE ---
-        SlidingQueueDrawer(
-            isQueueExpanded = isQueueExpanded,
-            onQueueExpandedChange = { viewModel.setQueueExpanded(it) },
-            songList = songList,
-            currentSongIndex = currentSongIndex,
-            isShuffleEnabled = isShuffleEnabled,
-            repeatMode = repeatMode,
-            sleepTimerMode = sleepTimerMode,
-            onReorderQueue = { from, to -> viewModel.reorderQueue(from, to) },
-            onPlaySongAtIndex = { index -> viewModel.playSongAtIndex(index) },
-            onRemoveSongAtIndex = { index -> viewModel.removeSongAtIndex(index) },
-            onToggleShuffle = { viewModel.toggleShuffle() },
-            onToggleLoopMode = { viewModel.toggleLoopMode() },
-            onShowSleepTimerDialog = { showSleepTimerDialog = true },
-            playerBackgroundColor = playerBackgroundColor.toArgb(),
-            dynamicAccentColor = dynamicAccentColor,
-            isDark = isDark,
-            isAutoplayEnabled = isAutoplayEnabled,
-            onAutoplayToggle = onAutoplayToggle
-        )
-
-        // --- Standalone Sleep Timer Bottom Sheet ---
-        if (showSleepTimerDialog) {
-            SleepTimerBottomSheet(
-                onDismissRequest = { showSleepTimerDialog = false },
-                sleepTimerEndTime = sleepTimerEndTime,
-                sleepTimerMode = sleepTimerMode,
-                onStartTimer = { mins ->
-                    viewModel.startCustomSleepTimer(mins)
-                },
-                onCancelTimer = {
-                    viewModel.cancelSleepTimer()
-                },
-                onSetEndOfSong = { enable ->
-                    if (enable) viewModel.setSleepTimerMode(PlayerSharedViewModel.SleepTimerMode.END_OF_SONG)
-                    else viewModel.cancelSleepTimer()
+            // --- Lyrics Options Bottom Sheet ---
+            if (showLyricsOptionsSheet) {
+                val lyricsSheetState =
+                    androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+                androidx.compose.material3.ModalBottomSheet(
+                    onDismissRequest = { showLyricsOptionsSheet = false },
+                    sheetState = lyricsSheetState,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                    dragHandle = { androidx.compose.material3.BottomSheetDefaults.DragHandle() },
+                    scrimColor = Color.Black.copy(alpha = 0.3f)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                            .padding(bottom = 12.dp)
+                    ) {
+                        UnifiedLyricsBottomSheetContent(
+                            providerResults = providerResults,
+                            selectedProvider = selectedProvider,
+                            syncOffsetMs = syncOffsetMs,
+                            onSyncOffsetChange = { syncOffsetMs = it },
+                            onProviderSelected = onProviderSelected,
+                            onRefindClick = onRetryLyrics,
+                            accentColor = dynamicAccentColor,
+                            contentColor = contentColor,
+                            onUpdateCustomLyrics = { viewModel.updateCustomLyrics(it) },
+                            currentLyricsText = remember(syncedLyrics, plainLyrics) {
+                                if (!syncedLyrics.isNullOrEmpty()) {
+                                    syncedLyrics.joinToString("\n") { line ->
+                                        val min = line.startTimeMs / 60000
+                                        val sec = (line.startTimeMs % 60000) / 1000
+                                        val csec = (line.startTimeMs % 1000) / 10
+                                        val mTen = min / 10
+                                        val mOne = min % 10
+                                        val sTen = sec / 10
+                                        val sOne = sec % 10
+                                        val cTen = csec / 10
+                                        val cOne = csec % 10
+                                        "[$mTen$mOne:$sTen$sOne.$cTen$cOne]${line.content}"
+                                    }
+                                } else {
+                                    plainLyrics ?: ""
+                                }
+                            },
+                            songTitle = uiState.currentSong?.title ?: "Current Song",
+                            syncedLyrics = syncedLyrics,
+                            plainLyricsRaw = plainLyrics,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    }
                 }
-            )
+            }
+
+            // --- Lyric Share Bottom Sheet ---
+            if (selectedLyricForShare != null) {
+                LyricShareBottomSheet(
+                    currentSong = uiState.currentSong,
+                    allLyrics = syncedLyrics ?: emptyList(),
+                    initialLine = selectedLyricForShare!!,
+                    onDismiss = { selectedLyricForShare = null }
+                )
+            }
+
+            // --- Standalone Sleep Timer Bottom Sheet ---
+            if (showSleepTimerDialog) {
+                SleepTimerBottomSheet(
+                    onDismissRequest = { showSleepTimerDialog = false },
+                    sleepTimerEndTime = sleepTimerEndTime,
+                    sleepTimerMode = sleepTimerMode,
+                    onStartTimer = { mins ->
+                        viewModel.startCustomSleepTimer(mins)
+                    },
+                    onCancelTimer = {
+                        viewModel.cancelSleepTimer()
+                    },
+                    onSetEndOfSong = { enable ->
+                        if (enable) viewModel.setSleepTimerMode(PlayerSharedViewModel.SleepTimerMode.END_OF_SONG)
+                        else viewModel.cancelSleepTimer()
+                    }
+                )
+            }
+
+            // --- Single Consolidated Player Options Bottom Sheet ---
+            if (showPlayerOptionsSheet) {
+                PlayerOptionsBottomSheet(
+                    currentSong = uiState.currentSong,
+                    playbackFormat = uiState.playbackFormat,
+                    playbackProvider = uiState.playbackProvider,
+                    viewModel = viewModel,
+                    onDismissRequest = { showPlayerOptionsSheet = false },
+                    onArtistClick = { artistId, artistName ->
+                        onArtistClick(artistId, artistName)
+                    },
+                    onAlbumClick = {
+                        val song = uiState.currentSong
+                        if (song != null) {
+                            onAlbumClick(song.albumId.toString(), song.title)
+                        }
+                    },
+                    onOpenEqualizer = {
+                        onCollapse()
+                        (context as? MainActivity)?.navigateToEffects()
+                    },
+                    onSaveClick = {
+                        onSaveClick()
+                    },
+                    onSleepTimerClick = {
+                        showSleepTimerDialog = true
+                    }
+                )
+            }
         }
     }
 }
