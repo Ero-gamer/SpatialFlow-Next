@@ -28,7 +28,10 @@ def isReleaseSigningReady = myKeystoreFile != null && myKeystorePassword != null
 android {
     namespace 'com.codetrio.spatialflow'
     compileSdk 37
-    ndkVersion "30.0.15729638"
+    def localSdkDir = localProps.getProperty('sdk.dir') ?: System.getenv("ANDROID_HOME") ?: System.getenv("ANDROID_SDK_ROOT")
+    if (localSdkDir != null && new File(localSdkDir, "ndk/30.0.15729638").exists()) {
+        ndkVersion "30.0.15729638"
+    }
 
     // Fix for "App not installed" errors when sharing debug APKs
     project.ext.set("android.injected.testOnly", "false")
