@@ -36,6 +36,10 @@ jobs:
           echo "ANDROID_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
           echo "ANDROID_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> $GITHUB_ENV
           echo "ANDROID_KEY_ALIAS_PASSWORD=${{ secrets.ANDROID_KEY_ALIAS_PASSWORD }}" >> $GITHUB_ENV
+          echo "COMMUNITY_GATEWAY_URL=${{ secrets.COMMUNITY_GATEWAY_URL }}" >> $GITHUB_ENV
+          echo "APP_HANDSHAKE_SALT=${{ secrets.APP_HANDSHAKE_SALT }}" >> $GITHUB_ENV
+          echo "SOURCE_POOL_KEY=${{ secrets.SOURCE_POOL_KEY }}" >> $GITHUB_ENV
+          echo "SHARE_API_URL=${{ secrets.SHARE_API_URL }}" >> $GITHUB_ENV
 
       - name: Accept Android SDK & NDK licenses
         run: |

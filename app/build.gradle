@@ -43,10 +43,10 @@ android {
         versionCode 10
         versionName "1.8.2"
 
-        def gatewayUrl = localProps.getProperty('COMMUNITY_GATEWAY_URL') ?: ""
-        def handshakeSalt = localProps.getProperty('APP_HANDSHAKE_SALT') ?: ""
-        def sourcePoolKey = localProps.getProperty('SOURCE_POOL_KEY') ?: ""
-        def shareApiUrl = localProps.getProperty('SHARE_API_URL') ?: ""
+        def gatewayUrl = localProps.getProperty('COMMUNITY_GATEWAY_URL') ?: System.getenv("COMMUNITY_GATEWAY_URL") ?: ""
+        def handshakeSalt = localProps.getProperty('APP_HANDSHAKE_SALT') ?: System.getenv("APP_HANDSHAKE_SALT") ?: ""
+        def sourcePoolKey = localProps.getProperty('SOURCE_POOL_KEY') ?: System.getenv("SOURCE_POOL_KEY") ?: ""
+        def shareApiUrl = localProps.getProperty('SHARE_API_URL') ?: System.getenv("SHARE_API_URL") ?: ""
         buildConfigField "String", "COMMUNITY_GATEWAY_URL", "\"${gatewayUrl}\""
         buildConfigField "String", "APP_HANDSHAKE_SALT", "\"${handshakeSalt}\""
         buildConfigField "String", "SOURCE_POOL_KEY", "\"${sourcePoolKey}\""
